@@ -115,15 +115,16 @@ def train(config):
     def decode(_batch):
         return autoencoder.decode(_batch)
 
-    @torch.cuda.amp.autocast()
+    # @torch.cuda.amp.autocast()
     def encode_text_t5(_batch):
         _latent_t5, latent_and_others_t5 = t5.get_text_embeddings(_batch)
-        token_embedding_t5 = (latent_and_others_t5['token_embedding'].to(torch.float32) * 10.0)
+        token_embedding_t5 = latent_and_others_t5['token_embedding'].to(torch.float32) * 10.0
         token_mask_t5 = latent_and_others_t5['token_mask']
         token_t5 = latent_and_others_t5['tokens']
+        # st()
         return token_embedding_t5, token_mask_t5, token_t5
     
-    @torch.cuda.amp.autocast()
+    # @torch.cuda.amp.autocast()
     def encode_text_clip(_batch):
         _latent_clip, latent_and_others_clip = clip.encode(_batch)
         token_embedding_clip = latent_and_others_clip['token_embedding']
@@ -167,7 +168,9 @@ def train(config):
 
         # st()
 
-        assert len(_batch) == 2
+        edit_mode = config.get('edit_mode', False)
+
+        assert len(_batch) == 3 if edit_mode else 2
         assert not config.dataset.cfg
         # _batch_img = _batch[0]
         # _batch_con = _batch[1]
@@ -177,9 +180,13 @@ def train(config):
         # _batch_img_ori = _batch[5]
         _batch_img_ori = _batch[0]
         _batch_caption = _batch[1]
+        if edit_mode:
+            _batch_img_src_ori = _batch[2]
 
         # _batch_img = encode_moments(_batch_img_ori)
         _z = encode(_batch_img_ori)
+        if edit_mode:
+            _z_cond = encode(_batch_img_src_ori)
 
         if llm == 't5':
             _batch_con, _batch_mask, _batch_token = encode_text_t5(_batch_caption)
@@ -188,7 +195,7 @@ def train(config):
         # st()
 
         loss, loss_dict = _flow_mathcing_model(_z, nnet, loss_coeffs=config.loss_coeffs, cond=_batch_con, con_mask=_batch_mask, batch_img_clip=_batch_img_ori, \
-            nnet_style=config.nnet.name, text_token=_batch_token, model_config=config.nnet.model_args, all_config=config, training_step=train_state.step)
+            nnet_style=config.nnet.name, text_token=_batch_token, model_config=config.nnet.model_args, all_config=config, training_step=train_state.step, cond_image=_z_cond if edit_mode else None)
 
         _metrics['loss'] = accelerator.gather(loss.detach()).mean()
         for key in loss_dict.keys():
@@ -200,7 +207,7 @@ def train(config):
         train_state.step += 1
         return dict(lr=train_state.optimizer.param_groups[0]['lr'], **_metrics)
 
-    def ode_fm_solver_sample(nnet_ema, _n_samples, _sample_steps, context=None, caption=None, testbatch_img_blurred=None, two_stage_generation=-1, token_mask=None, return_clipScore=False, ClipSocre_model=None):
+    def ode_fm_solver_sample(nnet_ema, _n_samples, _sample_steps, context=None, caption=None, testbatch_img_blurred=None, two_stage_generation=-1, token_mask=None, return_clipScore=False, ClipSocre_model=None, cond_image=None):
         with torch.no_grad():
             _z_gaussian = torch.randn(_n_samples, *config.z_shape, device=device)
                 
@@ -212,8 +219,9 @@ def train(config):
 
             has_null_indicator = hasattr(config.nnet.model_args, "cfg_indicator")
 
-            ode_solver = ODEEulerFlowMatchingSolver(nnet_ema, step_size_type="step_in_dsigma", guidance_scale=_cfg)
-            _z, _ = ode_solver.sample(x_T=_z_init, batch_size=_n_samples, sample_steps=_sample_steps, unconditional_guidance_scale=_cfg, has_null_indicator=has_null_indicator)
+            ode_solver = ODEEulerFlowMatchingSolver(nnet_ema, step_size_type="step_in_dsigma", guidance_scale=_cfg ) 
+            # st() 
+            _z, _ = ode_solver.sample(x_T=_z_init, batch_size=_n_samples, sample_steps=_sample_steps, unconditional_guidance_scale=_cfg, has_null_indicator=has_null_indicator, cond_image=cond_image )
 
             image_unprocessed = decode(_z)
 
@@ -274,18 +282,25 @@ def train(config):
         if train_state.step % config.train.eval_interval == 0 or train_state.step == 1 :
             torch.cuda.empty_cache()
             logging.info('Save a grid of images...')
+            edit_mode = config.get('edit_mode', False)
             # st()
             # batch = tree_map(lambda x: x, next(test_data_generator))
             # for batch in test_dataset_loader: break 
             # batch = test_dataset[:config.train.n_samples_eval]
-            batch = [[], []]
+            batch = [[], [], []] if edit_mode else [[], []]
             for i in range(config.train.n_samples_eval):
-                # batch[0].append(torch.tensor(test_dataset[i][0], device=device))
+                batch[0].append(torch.tensor(test_dataset[i][0], device=device))
                 batch[1].append(test_dataset[i][1])
+                if edit_mode:
+                    batch[2].append(torch.tensor(test_dataset[i][2], device=device))
             # st()
-            # batch[0] = torch.stack(batch[0], dim=0)
-            # _batch_img_ori = batch[0]
+            batch[0] = torch.stack(batch[0], dim=0)
+            _batch_img_ori = batch[0]
             # _z = encode(_batch_img_ori)
+            if edit_mode:
+                batch[2] = torch.stack(batch[2], dim=0)
+                _batch_img_src_ori = batch[2]
+                _z_cond = encode(_batch_img_src_ori)
             _batch_caption = batch[1]
             print(_batch_caption)
             if llm == 't5':
@@ -302,11 +317,20 @@ def train(config):
             #     token_mask = None
             # else:
             #     raise NotImplementedError
-            samples = ode_fm_solver_sample(nnet_ema, _n_samples=config.train.n_samples_eval, _sample_steps=50, context=contexts, token_mask=token_mask)
-            samples = make_grid(dataset.unpreprocess(samples), 5)
+            samples = ode_fm_solver_sample(nnet_ema, _n_samples=config.train.n_samples_eval, _sample_steps=50, context=contexts, token_mask=token_mask, cond_image=_z_cond if edit_mode else None)
+            # st()
+            samples = dataset.unpreprocess(samples)
+            gt_samples = dataset.unpreprocess(_batch_img_ori)
+            if edit_mode:
+                src_samples = dataset.unpreprocess(_batch_img_src_ori)
+                all_samples = torch.stack([src_samples, samples, gt_samples], dim=1 )
+            else:
+                all_samples = torch.stack([samples, gt_samples], dim=1 )
+            all_samples = einops.rearrange(all_samples, 'b n c h w -> (b n) c h w')
+            all_samples = make_grid(all_samples, nrow=3 if edit_mode else 2)
             if accelerator.is_main_process:
-                save_image(samples, os.path.join(config.sample_dir, f'{train_state.step}.jpg'))
-                wandb.log({'samples': wandb.Image(samples)}, step=train_state.step)
+                save_image(all_samples, os.path.join(config.sample_dir, f'{train_state.step}.jpg'))
+                wandb.log({'samples': wandb.Image(all_samples)}, step=train_state.step)
             accelerator.wait_for_everyone()
             torch.cuda.empty_cache()
 

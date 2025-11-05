@@ -17,6 +17,8 @@ from bs4 import BeautifulSoup
 from transformers import T5EncoderModel, AutoTokenizer
 from huggingface_hub import hf_hub_download
 
+from ipdb import set_trace as st
+
 
 class T5Embedder:
 
@@ -66,30 +68,33 @@ class T5Embedder:
 
         self.use_text_preprocessing = use_text_preprocessing
         self.hf_token = hf_token
-        self.cache_dir = cache_dir or os.path.expanduser('~/.cache/IF_')
+        # self.cache_dir = cache_dir or os.path.expanduser('~/.cache/IF_')
         self.dir_or_name = dir_or_name
 
-        tokenizer_path, path = dir_or_name, dir_or_name
-        if dir_or_name in self.available_models:
-            cache_dir = os.path.join(self.cache_dir, dir_or_name)
-            for filename in [
-                'config.json', 'special_tokens_map.json', 'spiece.model', 'tokenizer_config.json',
-                'pytorch_model.bin.index.json', 'pytorch_model-00001-of-00002.bin', 'pytorch_model-00002-of-00002.bin'
-            ]:
-                hf_hub_download(repo_id=f'DeepFloyd/{dir_or_name}', filename=filename, cache_dir=cache_dir,
-                                force_filename=filename, token=self.hf_token)
-            tokenizer_path, path = cache_dir, cache_dir
-        else:
-            cache_dir = os.path.join(self.cache_dir, 't5-v1_1-xxl')
-            for filename in [
-                'config.json', 'special_tokens_map.json', 'spiece.model', 'tokenizer_config.json',
-            ]:
-                hf_hub_download(repo_id='DeepFloyd/t5-v1_1-xxl', filename=filename, cache_dir=cache_dir,
-                                force_filename=filename, token=self.hf_token)
-            tokenizer_path = cache_dir
+        # tokenizer_path, path = dir_or_name, dir_or_name
+        # if dir_or_name in self.available_models:
+        #     cache_dir = os.path.join(self.cache_dir, dir_or_name)
+        #     for filename in [
+        #         'config.json', 'special_tokens_map.json', 'spiece.model', 'tokenizer_config.json',
+        #         'pytorch_model.bin.index.json', 'pytorch_model-00001-of-00002.bin', 'pytorch_model-00002-of-00002.bin'
+        #     ]:
+        #         hf_hub_download(repo_id=f'DeepFloyd/{dir_or_name}', filename=filename, cache_dir=cache_dir,
+        #                         force_filename=filename, token=self.hf_token)
+        #     tokenizer_path, path = cache_dir, cache_dir
+        # else:
+        #     cache_dir = os.path.join(self.cache_dir, 't5-v1_1-xxl')
+        #     for filename in [
+        #         'config.json', 'special_tokens_map.json', 'spiece.model', 'tokenizer_config.json',
+        #     ]:
+        #         hf_hub_download(repo_id='DeepFloyd/t5-v1_1-xxl', filename=filename, cache_dir=cache_dir,
+        #                         force_filename=filename, token=self.hf_token)
+        #     tokenizer_path = cache_dir
 
-        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
-        self.model = T5EncoderModel.from_pretrained(path, **t5_model_kwargs).eval()
+        # st()
+
+        self.tokenizer = AutoTokenizer.from_pretrained(f'DeepFloyd/{dir_or_name}')
+        self.model = T5EncoderModel.from_pretrained(f'DeepFloyd/{dir_or_name}', **t5_model_kwargs).eval()
+        print('[t5 loaded]')
 
     def get_text_embeddings(self, texts):
         texts = [self.text_preprocessing(text) for text in texts]

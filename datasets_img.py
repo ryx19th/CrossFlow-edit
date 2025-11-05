@@ -218,58 +218,57 @@ def get_feature_dir_info(root):
 
 
 class ImageDataset(Dataset):
-    def __init__(self, root, resolution, llm):
+    def __init__(self, root, resolution, llm, edit_mode=False):
         super().__init__()
         json_path = os.path.join(root,'img_text_pair.jsonl')
         self.img_root = os.path.join(root,'imgs')
-        # self.feature_root = os.path.join(root,'features')
         self.resolution = resolution
         self.llm = llm
         self.file_list = []
         with open(json_path, 'r', encoding='utf-8') as file:
             for line in tqdm(file):
                 self.file_list.append(json.loads(line))
+        self.edit_mode = edit_mode
 
     def __len__(self):
         return len(self.file_list)
     
     def __getitem__(self, idx):
         data_item = self.file_list[idx]
-        # feature_path = os.path.join(self.feature_root, data_item.split('/')[-1].replace('.jpg','.npy'))
-        img_path = os.path.join(self.img_root, data_item['img'])
 
-        # train_item = np.load(feature_path, allow_pickle=True).item()
-        pil_image = Image.open(img_path)
-        pil_image.load()
-        pil_image = pil_image.convert("RGB")
+        img_path = os.path.join(self.img_root, data_item['img'])
+        img = self.load_process_image(img_path)
+
+        if self.edit_mode:
+            src_img_path = os.path.join(self.img_root, data_item['img_src'])
+            img_src = self.load_process_image(src_img_path)
 
         prompt = data_item['prompt']
 
-        # z = train_item[f'image_latent_{self.resolution}']
-        # token_embedding = train_item[f'token_embedding_{self.llm}']
-        # token_mask = train_item[f'token_mask_{self.llm}']
-        # token = train_item[f'token_{self.llm}']
-        # caption = train_item['batch_caption']
+        if self.edit_mode:
+            return img, prompt, img_src
+        else:
+            return img, prompt
 
-        # img = center_crop_arr(pil_image, image_size=self.resolution)
+    def load_process_image(self, img_path):
+        pil_image = Image.open(img_path)
+        pil_image.load()
+        pil_image = pil_image.convert("RGB")
         img = pil_image.resize((self.resolution, self.resolution), resample=Image.LANCZOS)
         img = np.array(img).astype(np.float32)
         img = img / 127.5 - 1.0
         img = einops.rearrange(img, 'h w c -> c h w')
-
-        # return z, token_embedding, token_mask, token, caption, 0, img, 0, 0
-        # return z, token_embedding, token_mask, token, caption, img
-        return img, prompt
+        return img
 
 
 class ImageFullDataset(DatasetFactory):  # the moments calculated by Stable Diffusion image encoder & the contexts calculated by clip
-    def __init__(self, train_path, val_path, resolution, llm, cfg=False, p_uncond=None, fix_test_order=False):
+    def __init__(self, train_path, val_path, resolution, llm, cfg=False, p_uncond=None, fix_test_order=False, edit_mode=False):
         super().__init__()
         print('Prepare dataset...')
         self.resolution = resolution
 
-        self.train = ImageDataset(train_path, resolution=resolution, llm=llm)
-        self.test = ImageDataset(val_path, resolution=resolution, llm=llm)
+        self.train = ImageDataset(train_path, resolution=resolution, llm=llm, edit_mode=edit_mode)
+        self.test = ImageDataset(val_path, resolution=resolution, llm=llm, edit_mode=edit_mode)
         
         print('Prepare dataset ok')
 

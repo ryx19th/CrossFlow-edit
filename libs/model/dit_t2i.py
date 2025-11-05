@@ -1,6 +1,7 @@
 # DiT: https://github.com/facebookresearch/DiT/blob/main/models.py
 # --------------------------------------------------------
 
+from turtle import st
 import torch
 import torch.nn as nn
 import numpy as np
@@ -14,7 +15,10 @@ from .trans_autoencoder import TransEncoder, Adaptor
 
 
 def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    if shift.ndim < x.ndim:
+        shift = shift.unsqueeze(1)
+        scale = scale.unsqueeze(1)
+    return x * (1 + scale) + shift
 
 
 #################################################################################
@@ -100,9 +104,13 @@ class DiTBlock(nn.Module):
         # return self._forward(x, c)
     
     def _forward(self, x, c):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        # st() 
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1) # Note -1 
+        if gate_msa.ndim < 3:
+            gate_msa = gate_msa.unsqueeze(1)
+            gate_mlp = gate_mlp.unsqueeze(1)
+        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
 
@@ -120,7 +128,8 @@ class FinalLayer(nn.Module):
         )
 
     def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
+        # st()
+        shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1) # Note -1 
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
@@ -147,6 +156,12 @@ class DiT(nn.Module):
         self.out_channels = self.in_channels * 2 if self.learn_sigma else self.in_channels
         self.patch_size = patch_size
         self.num_heads = num_heads
+
+        self.edit_mode = config.edit_mode if hasattr(config, "edit_mode") else False
+        self.cond_mode = config.cond_mode if hasattr(config, "cond_mode") else None
+        assert self.cond_mode in [None, 'channel', 'cross-attn', 'self-attn']
+        if self.edit_mode and self.cond_mode == 'channel':
+            self.in_channels *= 2
 
         self.x_embedder = PatchEmbed(self.input_size, patch_size, self.in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -178,8 +193,6 @@ class DiT(nn.Module):
                                     )
         del self.open_clip.text
         del self.open_clip.logit_bias
-
-
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -232,19 +245,48 @@ class DiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def _forward(self, x, t, null_indicator):
+    def _forward(self, x, t, null_indicator, cond_image=None):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         """
+        if self.edit_mode and self.cond_mode == 'channel':
+            # st()
+            assert cond_image is not None
+            x = torch.cat([x, cond_image], dim=1)  # (N, 2*C, H, W)
+
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
+        # Altho also masked but has been masked in TextVE so always unified shape (&same as img) here? 
         t = self.t_embedder(t)                   # (N, D)
         y = self.y_embedder(null_indicator)    # (N, D)
+        # Note that this is only an indicator for cfg, not the real cond, as the real con is x already in CF\ 
+
+        if self.edit_mode and self.cond_mode == 'self-attn':
+            # st()
+            cond_x = self.x_embedder(cond_image) + self.pos_embed # 
+            x = torch.cat([x, cond_x], dim=1)
+
+        if self.edit_mode and self.cond_mode == 'cross-attn':
+            # st()
+            assert cond_image is not None
+            cond_x = self.x_embedder(cond_image) + self.pos_embed  # (N, T, D)
+            y = y.unsqueeze(1)  # (N, 1, D)
+            # y = torch.cat([y, cond_x], dim=-2)  # (N, 1+T, D)
+            y = y + cond_x
+            # NOTE TODO No dedicated Cross Attn (sequential concat) here, so have to do AdaLN (turn to spatial), or have to implement additional Cross Attn (sequential concat) from scratch! NOTE TODO # 
+            # (This might also be one of advantages of CF, that no sequential concat Cross Attn is needed! (not bcuz of compact save by dit, but bcuz of no cond any more by direct mapping!) -- (and btw not highlighted, so my temp attn etc. also)
+            t = t.unsqueeze(1)  # (N, 1, D)
+
         c = t + y                                # (N, D)
         for block in self.blocks:
             x = block(x, c)                      # (N, T, D)
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
+
+        if self.edit_mode and self.cond_mode == 'self-attn':
+            # st()
+            x, cond_x = x.chunk(2, dim=1)
+
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return [x]
 
@@ -265,28 +307,26 @@ class DiT(nn.Module):
         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
-    
+
     def _reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
         return eps * std + mu
-    
-    def _text_encoder(self, condition_context, tar_shape, mask):
 
+    def _text_encoder(self, condition_context, tar_shape, mask):
         output = self.context_encoder(condition_context, mask)
         mu, log_var = torch.chunk(output, 2, dim=-1)        
         z = self._reparameterize(mu, log_var)
 
         return [z, mu, log_var]
-    
-    def _img_clip(self, image_input):
 
+    def _img_clip(self, image_input):
         image_latent = self.open_clip.encode_image(image_input)
         image_latent = self.open_clip_output(image_latent)
 
         return image_latent, self.open_clip.logit_scale
-    
-    def forward(self, x, t = None, log_snr = None, text_encoder=False, text_decoder=False, image_clip=False, shape=None, mask=None, null_indicator=None):
+
+    def forward(self, x, t = None, log_snr = None, text_encoder=False, text_decoder=False, image_clip=False, shape=None, mask=None, null_indicator=None, cond_image=None):
         if text_encoder:
             return self._text_encoder(condition_context = x, tar_shape=shape, mask=mask)
         elif text_decoder:
@@ -295,7 +335,7 @@ class DiT(nn.Module):
         elif image_clip:
             return self._img_clip(image_input = x) 
         else:
-            return self._forward(x = x, t = t, null_indicator=null_indicator)
+            return self._forward(x = x, t = t, null_indicator=null_indicator, cond_image=cond_image)
 
 
 #################################################################################

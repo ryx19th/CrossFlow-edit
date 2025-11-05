@@ -12,6 +12,8 @@ import torch
 
 import random
 
+from ipdb import set_trace as st
+
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +149,8 @@ class Solver:
         start_timestep=None,
         num_timesteps=None,
         do_make_schedule=True,
+
+        cond_image=None,
         **kwargs,
     ):
         self.num_inf_timesteps = sample_steps
@@ -177,6 +181,8 @@ class Solver:
             verbose=verbose,
             ucg_schedule=ucg_schedule,
             start_timestep=start_timestep,
+
+            cond_image=cond_image,
         )
         return samples, intermediates
 
@@ -187,17 +193,19 @@ class Solver:
         t_continuous,
         unconditional_guidance_scale,
         has_null_indicator,
+
+        cond_image=None,
     ):
 
         log_snr = 4 - t_continuous * 8 # inversed
 
         if has_null_indicator:
-            _cond = self.model(x, t=t_continuous, log_snr=log_snr, null_indicator=torch.tensor([False] * x.shape[0]).to(x.device))[-1]
-            _uncond = self.model(x, t=t_continuous, log_snr=log_snr, null_indicator=torch.tensor([True] * x.shape[0]).to(x.device))[-1]
+            _cond = self.model(x, t=t_continuous, log_snr=log_snr, null_indicator=torch.tensor([False] * x.shape[0]).to(x.device), cond_image=cond_image)[-1]
+            _uncond = self.model(x, t=t_continuous, log_snr=log_snr, null_indicator=torch.tensor([True] * x.shape[0]).to(x.device), cond_image=cond_image)[-1]
 
             assert unconditional_guidance_scale > 1
             return _uncond + unconditional_guidance_scale * (_cond - _uncond)
         else:
-            _cond = self.model(x, log_snr=log_snr)[-1]
+            _cond = self.model(x, log_snr=log_snr, cond_image=cond_image)[-1]
             return _cond
 

@@ -136,13 +136,20 @@ class TrainState(object):
 
     def load_pretrained(self, path):
         logging.info(f'load pretrained from {path}')
-        # st()
         state_dict = torch.load(path, map_location='cpu')
+
+        if self.nnet.edit_mode and self.nnet.cond_mode == 'channel':
+            # st()
+            # if state_dict["x_embedder.proj.weight"].shape != self.nnet.x_embedder.proj.weight.shape:
+            assert state_dict["x_embedder.proj.weight"].shape[1] * 2 == self.nnet.x_embedder.proj.weight.shape[1], f"Shape mismatch: state_dict has {state_dict['x_embedder.proj.weight'].shape} vs model has {self.nnet.x_embedder.proj.weight.shape}"
+            logging.info("Expand the x_embedder.proj.weight for edit mode.")
+            old_weight = state_dict["x_embedder.proj.weight"]
+            new_weight = torch.zeros_like(self.nnet.x_embedder.proj.weight, device=old_weight.device, dtype=old_weight.dtype)
+            new_weight[:, :old_weight.shape[1]] = old_weight
+            state_dict["x_embedder.proj.weight"] = new_weight
+
         self.nnet.load_state_dict(state_dict)
         self.nnet_ema.load_state_dict(state_dict)
-        # for key, val in self.__dict__.items():
-        #     if key != 'step' and val is not None:
-        #         val.load_state_dict(torch.load(os.path.join(path, f'{key}.pth'), map_location='cpu'))
 
     def load(self, path):
         logging.info(f'load from {path}')

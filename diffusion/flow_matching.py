@@ -13,6 +13,8 @@ from diffusion.base_solver import Solver
 import numpy as np
 from torchvision import transforms
 
+from ipdb import set_trace as st
+
 
 def check_zip(*args):
     args = [list(arg) for arg in args]
@@ -324,6 +326,8 @@ class FlowMatching(nn.Module):
         return_raw_loss=False,
         additional_embeddings=None,
         timesteps: Optional[Tuple[int, int]] = None,
+
+        cond_image=None,
         *args,
         **kwargs,
     ):
@@ -337,7 +341,7 @@ class FlowMatching(nn.Module):
             else:
                 standard_diffusion=False
             return self.p_losses_textVAE(
-                x, cond, con_mask, timesteps, nnet, batch_img_clip=batch_img_clip, cond_ori=cond_ori, con_mask_ori=con_mask_ori, text_token=text_token, loss_coeffs=loss_coeffs, return_raw_loss=return_raw_loss, nnet_style=nnet_style, standard_diffusion=standard_diffusion, all_config=all_config, training_step=training_step, *args, **kwargs
+                x, cond, con_mask, timesteps, nnet, batch_img_clip=batch_img_clip, cond_ori=cond_ori, con_mask_ori=con_mask_ori, text_token=text_token, loss_coeffs=loss_coeffs, return_raw_loss=return_raw_loss, nnet_style=nnet_style, standard_diffusion=standard_diffusion, all_config=all_config, training_step=training_step, cond_image=cond_image, *args, **kwargs
             )
         elif nnet_style == 'dit':
             if hasattr(model_config, "standard_diffusion") and model_config.standard_diffusion:
@@ -346,7 +350,7 @@ class FlowMatching(nn.Module):
             else:
                 standard_diffusion=False
             return self.p_losses_textVAE_dit(
-                    x, cond, con_mask, timesteps, nnet, batch_img_clip=batch_img_clip, cond_ori=cond_ori, con_mask_ori=con_mask_ori, text_token=text_token, loss_coeffs=loss_coeffs, return_raw_loss=return_raw_loss, nnet_style=nnet_style, standard_diffusion=standard_diffusion, all_config=all_config, training_step=training_step, *args, **kwargs
+                    x, cond, con_mask, timesteps, nnet, batch_img_clip=batch_img_clip, cond_ori=cond_ori, con_mask_ori=con_mask_ori, text_token=text_token, loss_coeffs=loss_coeffs, return_raw_loss=return_raw_loss, nnet_style=nnet_style, standard_diffusion=standard_diffusion, all_config=all_config, training_step=training_step, cond_image=cond_image, *args, **kwargs
                 )
         else:
             raise NotImplementedError
@@ -372,10 +376,14 @@ class FlowMatching(nn.Module):
         additional_embeddings=None,
         standard_diffusion=False,
         noise=None,
+
+        cond_image=None,
     ):
         """
         CrossFlow training for DiMR
         """
+
+        assert cond_image is None, NotImplementedError("cond_image not implemented for DiMR yet")
 
         assert noise is None
 
@@ -419,7 +427,7 @@ class FlowMatching(nn.Module):
         target_velocity = self.Dt_psi(t, x=noise, x1=x_start)
         log_snr = 4 - t * 8 # compute from timestep : inversed
 
-        prediction = nnet(x_noisy, log_snr = log_snr, null_indicator=null_indicator)
+        prediction = nnet(x_noisy, log_snr = log_snr, null_indicator = null_indicator)
 
         target = multi_scale_targets(target_velocity, levels = len(prediction), scale_correction = True)
 
@@ -453,6 +461,8 @@ class FlowMatching(nn.Module):
         additional_embeddings=None,
         standard_diffusion=False,
         noise=None,
+
+        cond_image=None,
     ):
         """
         CrossFLow training for DiT
@@ -497,7 +507,7 @@ class FlowMatching(nn.Module):
         x_noisy = self.psi(t, x=noise, x1=x_start)
         target_velocity = self.Dt_psi(t, x=noise, x1=x_start)
 
-        prediction = nnet(x_noisy, t = t, null_indicator = null_indicator)[0]
+        prediction = nnet(x_noisy, t = t, null_indicator = null_indicator, cond_image = cond_image)[0]
 
         loss_diff = self.mos(prediction - target_velocity)
 
@@ -552,6 +562,8 @@ class ODEEulerFlowMatchingSolver(Solver):
         unconditional_guidance_scale,
         has_null_indicator,
         t=[0, 1.0],
+
+        cond_image=None,
         **kwargs,
     ):
         """
@@ -581,6 +593,8 @@ class ODEEulerFlowMatchingSolver(Solver):
                 has_null_indicator = has_null_indicator,
                 t_continuous = t_i.repeat(x_T.shape[0]),
                 unconditional_guidance_scale = unconditional_guidance_scale,
+
+                cond_image=cond_image,
             )
             if self.step_size_type == "step_in_dsigma":
                 step_size = sigma_steps[i + 1] - sigma_steps[i]
@@ -598,6 +612,8 @@ class ODEEulerFlowMatchingSolver(Solver):
     def sample(
         self,
         *args,
+
+        cond_image=None,
         **kwargs,
     ):
         assert kwargs.get("ucg_schedule", None) is None
@@ -616,10 +632,14 @@ class ODEEulerFlowMatchingSolver(Solver):
         self.num_time_steps = kwargs.get("sample_steps")
         self.x_T_uncon = kwargs.get("x_T_uncon")
 
+        # st() 
+
         samples, intermediates = super().sample(
             *args,
             sampling_method=self.sample_euler,
             do_make_schedule=False,
+
+            cond_image=cond_image,
             **kwargs,
         )
         return samples, intermediates

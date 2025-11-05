@@ -84,6 +84,8 @@ model = Args(
         num_attention_heads = 8,
         dropout_prob = 0.1,
     ),
+    edit_mode=True,
+    cond_mode='cross-attn', # 'channel', # 'self-attn', #              # ['channel', 'cross-attn', 'self-attn'] 
 )
 
 def d(**kwargs):
@@ -137,7 +139,8 @@ def get_config():
         llm='t5', # 'clip', #                                            # language model to generate language embedding
         train_path='anyedit_all',     # training set path
         val_path='anyedit_val',      # val set path
-        cfg=False
+        cfg=False,
+        edit_mode=True,
     )
 
     config.sample = d(
@@ -150,6 +153,8 @@ def get_config():
     )
 
     config.load_from = 'pretrained_models/t2i_512px_t5_dit.pth' # 'pretrained_models/t2i_512px_clip_dimr.pth' # 
+
+    config.edit_mode = True
 
     return config
 
