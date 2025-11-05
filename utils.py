@@ -12,6 +12,9 @@ from absl import logging
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
 
+from ipdb import set_trace as st
+
+
 def save_image_with_caption(image_tensor, caption, filename, font_size=20, font_path='/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'):
     """
     Save an image with a caption
@@ -130,6 +133,16 @@ class TrainState(object):
         for key, val in self.__dict__.items():
             if key != 'step' and val is not None:
                 torch.save(val.state_dict(), os.path.join(path, f'{key}.pth'))
+
+    def load_pretrained(self, path):
+        logging.info(f'load pretrained from {path}')
+        # st()
+        state_dict = torch.load(path, map_location='cpu')
+        self.nnet.load_state_dict(state_dict)
+        self.nnet_ema.load_state_dict(state_dict)
+        # for key, val in self.__dict__.items():
+        #     if key != 'step' and val is not None:
+        #         val.load_state_dict(torch.load(os.path.join(path, f'{key}.pth'), map_location='cpu'))
 
     def load(self, path):
         logging.info(f'load from {path}')

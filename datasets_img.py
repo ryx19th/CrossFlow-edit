@@ -133,39 +133,39 @@ def center_crop(width, height, img):
     return np.array(img).astype(np.uint8)
 
 
-class MSCOCODatabase(Dataset):
-    def __init__(self, root, annFile, size=None):
-        from pycocotools.coco import COCO
-        self.root = root
-        self.height = self.width = size
+# class MSCOCODatabase(Dataset):
+#     def __init__(self, root, annFile, size=None):
+#         from pycocotools.coco import COCO
+#         self.root = root
+#         self.height = self.width = size
 
-        self.coco = COCO(annFile)
-        self.keys = list(sorted(self.coco.imgs.keys()))
+#         self.coco = COCO(annFile)
+#         self.keys = list(sorted(self.coco.imgs.keys()))
 
-    def _load_image(self, key: int):
-        path = self.coco.loadImgs(key)[0]["file_name"]
-        return Image.open(os.path.join(self.root, path)).convert("RGB")
+#     def _load_image(self, key: int):
+#         path = self.coco.loadImgs(key)[0]["file_name"]
+#         return Image.open(os.path.join(self.root, path)).convert("RGB")
 
-    def _load_target(self, key: int):
-        return self.coco.loadAnns(self.coco.getAnnIds(key))
+#     def _load_target(self, key: int):
+#         return self.coco.loadAnns(self.coco.getAnnIds(key))
 
-    def __len__(self):
-        return len(self.keys)
+#     def __len__(self):
+#         return len(self.keys)
 
-    def __getitem__(self, index):
-        key = self.keys[index]
-        image = self._load_image(key)
-        image = np.array(image).astype(np.uint8)
-        image = center_crop(self.width, self.height, image).astype(np.float32)
-        image = (image / 127.5 - 1.0).astype(np.float32)
-        image = einops.rearrange(image, 'h w c -> c h w')
+#     def __getitem__(self, index):
+#         key = self.keys[index]
+#         image = self._load_image(key)
+#         image = np.array(image).astype(np.uint8)
+#         image = center_crop(self.width, self.height, image).astype(np.float32)
+#         image = (image / 127.5 - 1.0).astype(np.float32)
+#         image = einops.rearrange(image, 'h w c -> c h w')
 
-        anns = self._load_target(key)
-        target = []
-        for ann in anns:
-            target.append(ann['caption'])
+#         anns = self._load_target(key)
+#         target = []
+#         for ann in anns:
+#             target.append(ann['caption'])
 
-        return image, target
+#         return image, target
 
 
 def get_feature_dir_info(root):
@@ -180,111 +180,114 @@ def get_feature_dir_info(root):
     return num_data, n_captions
 
 
-class MSCOCOFeatureDataset(Dataset):
-    # the image features are got through sample
-    def __init__(self, root, need_squeeze=False, full_feature=False, fix_test_order=False):
-        self.root = root
-        self.num_data, self.n_captions = get_feature_dir_info(root)
-        self.need_squeeze = need_squeeze
-        self.full_feature = full_feature
-        self.fix_test_order = fix_test_order
+# class MSCOCOFeatureDataset(Dataset):
+#     # the image features are got through sample
+#     def __init__(self, root, need_squeeze=False, full_feature=False, fix_test_order=False):
+#         self.root = root
+#         self.num_data, self.n_captions = get_feature_dir_info(root)
+#         self.need_squeeze = need_squeeze
+#         self.full_feature = full_feature
+#         self.fix_test_order = fix_test_order
 
-    def __len__(self):
-        return self.num_data
+#     def __len__(self):
+#         return self.num_data
 
-    def __getitem__(self, index):
-        if self.full_feature:
-            z = np.load(os.path.join(self.root, f'{index}.npy'))
+#     def __getitem__(self, index):
+#         if self.full_feature:
+#             z = np.load(os.path.join(self.root, f'{index}.npy'))
 
-            if self.fix_test_order:
-                k = self.n_captions[index] - 1
-            else:
-                k = random.randint(0, self.n_captions[index] - 1)
+#             if self.fix_test_order:
+#                 k = self.n_captions[index] - 1
+#             else:
+#                 k = random.randint(0, self.n_captions[index] - 1)
 
-            test_item = np.load(os.path.join(self.root, f'{index}_{k}.npy'), allow_pickle=True).item()
-            token_embedding = test_item['token_embedding']
-            token_mask = test_item['token_mask']
-            token = test_item['token']
-            caption = test_item['promt']
-            return z, token_embedding, token_mask, token, caption
-        else:
-            z = np.load(os.path.join(self.root, f'{index}.npy'))
-            k = random.randint(0, self.n_captions[index] - 1)
-            c = np.load(os.path.join(self.root, f'{index}_{k}.npy'))
-            if self.need_squeeze:
-                return z, c.squeeze()
-            else:
-                return z, c
+#             test_item = np.load(os.path.join(self.root, f'{index}_{k}.npy'), allow_pickle=True).item()
+#             token_embedding = test_item['token_embedding']
+#             token_mask = test_item['token_mask']
+#             token = test_item['token']
+#             caption = test_item['promt']
+#             return z, token_embedding, token_mask, token, caption
+#         else:
+#             z = np.load(os.path.join(self.root, f'{index}.npy'))
+#             k = random.randint(0, self.n_captions[index] - 1)
+#             c = np.load(os.path.join(self.root, f'{index}_{k}.npy'))
+#             if self.need_squeeze:
+#                 return z, c.squeeze()
+#             else:
+#                 return z, c
 
 
-class JDBFeatureDataset(Dataset):
+class ImageDataset(Dataset):
     def __init__(self, root, resolution, llm):
         super().__init__()
         json_path = os.path.join(root,'img_text_pair.jsonl')
         self.img_root = os.path.join(root,'imgs')
-        self.feature_root = os.path.join(root,'features')
+        # self.feature_root = os.path.join(root,'features')
         self.resolution = resolution
         self.llm = llm
         self.file_list = []
         with open(json_path, 'r', encoding='utf-8') as file:
-            for line in file:
-                self.file_list.append(json.loads(line)['img_path'])
+            for line in tqdm(file):
+                self.file_list.append(json.loads(line))
 
     def __len__(self):
         return len(self.file_list)
     
     def __getitem__(self, idx):
         data_item = self.file_list[idx]
-        feature_path = os.path.join(self.feature_root, data_item.split('/')[-1].replace('.jpg','.npy'))
-        img_path = os.path.join(self.img_root, data_item)
+        # feature_path = os.path.join(self.feature_root, data_item.split('/')[-1].replace('.jpg','.npy'))
+        img_path = os.path.join(self.img_root, data_item['img'])
 
-        train_item = np.load(feature_path, allow_pickle=True).item()
+        # train_item = np.load(feature_path, allow_pickle=True).item()
         pil_image = Image.open(img_path)
         pil_image.load()
         pil_image = pil_image.convert("RGB")
 
+        prompt = data_item['prompt']
 
-        z = train_item[f'image_latent_{self.resolution}']
-        token_embedding = train_item[f'token_embedding_{self.llm}']
-        token_mask = train_item[f'token_mask_{self.llm}']
-        token = train_item[f'token_{self.llm}']
-        caption = train_item['batch_caption']
+        # z = train_item[f'image_latent_{self.resolution}']
+        # token_embedding = train_item[f'token_embedding_{self.llm}']
+        # token_mask = train_item[f'token_mask_{self.llm}']
+        # token = train_item[f'token_{self.llm}']
+        # caption = train_item['batch_caption']
 
-        img = center_crop_arr(pil_image, image_size=self.resolution)
-        img = (img / 127.5 - 1.0).astype(np.float32)
+        # img = center_crop_arr(pil_image, image_size=self.resolution)
+        img = pil_image.resize((self.resolution, self.resolution), resample=Image.LANCZOS)
+        img = np.array(img).astype(np.float32)
+        img = img / 127.5 - 1.0
         img = einops.rearrange(img, 'h w c -> c h w')
 
         # return z, token_embedding, token_mask, token, caption, 0, img, 0, 0
-        return z, token_embedding, token_mask, token, caption, img
+        # return z, token_embedding, token_mask, token, caption, img
+        return img, prompt
 
 
-class JDBFullFeatures(DatasetFactory):  # the moments calculated by Stable Diffusion image encoder & the contexts calculated by clip
+class ImageFullDataset(DatasetFactory):  # the moments calculated by Stable Diffusion image encoder & the contexts calculated by clip
     def __init__(self, train_path, val_path, resolution, llm, cfg=False, p_uncond=None, fix_test_order=False):
         super().__init__()
         print('Prepare dataset...')
         self.resolution = resolution
 
-        self.train = JDBFeatureDataset(train_path, resolution=resolution, llm=llm)
-        self.test = MSCOCOFeatureDataset(os.path.join(val_path, 'val'), full_feature=True, fix_test_order=fix_test_order)
-        assert len(self.test) == 40504
+        self.train = ImageDataset(train_path, resolution=resolution, llm=llm)
+        self.test = ImageDataset(val_path, resolution=resolution, llm=llm)
         
         print('Prepare dataset ok')
 
-        self.empty_context = np.load(os.path.join(val_path, 'empty_context.npy'), allow_pickle=True).item()
+        # self.empty_context = np.load(os.path.join(val_path, 'empty_context.npy'), allow_pickle=True).item()
 
         assert not cfg
 
         # text embedding extracted by clip
-        self.prompts, self.token_embedding, self.token_mask, self.token = [], [], [], []
-        for f in sorted(os.listdir(os.path.join(val_path, 'run_vis')), key=lambda x: int(x.split('.')[0])):
-            vis_item = np.load(os.path.join(val_path, 'run_vis', f), allow_pickle=True).item()
-            self.prompts.append(vis_item['promt'])
-            self.token_embedding.append(vis_item['token_embedding'])
-            self.token_mask.append(vis_item['token_mask'])
-            self.token.append(vis_item['token'])
-        self.token_embedding = np.array(self.token_embedding)
-        self.token_mask = np.array(self.token_mask)
-        self.token = np.array(self.token)
+        # self.prompts, self.token_embedding, self.token_mask, self.token = [], [], [], []
+        # for f in sorted(os.listdir(os.path.join(val_path, 'run_vis')), key=lambda x: int(x.split('.')[0])):
+        #     vis_item = np.load(os.path.join(val_path, 'run_vis', f), allow_pickle=True).item()
+        #     self.prompts.append(vis_item['promt'])
+        #     self.token_embedding.append(vis_item['token_embedding'])
+        #     self.token_mask.append(vis_item['token_mask'])
+        #     self.token.append(vis_item['token'])
+        # self.token_embedding = np.array(self.token_embedding)
+        # self.token_mask = np.array(self.token_mask)
+        # self.token = np.array(self.token)
 
     @property
     def data_shape(self):
@@ -293,13 +296,13 @@ class JDBFullFeatures(DatasetFactory):  # the moments calculated by Stable Diffu
         else:
             return 4, 32, 32
 
-    @property
-    def fid_stat(self):
-        return f'assets/fid_stats/fid_stats_mscoco256_val.npz'
+    # @property
+    # def fid_stat(self):
+    #     return f'assets/fid_stats/fid_stats_mscoco256_val.npz'
 
 
 def get_dataset(name, **kwargs):
-    if name == 'JDB_demo_features':
-        return JDBFullFeatures(**kwargs)
+    if name == 'ImageDataset':
+        return ImageFullDataset(**kwargs)
     else:
         raise NotImplementedError(name)
