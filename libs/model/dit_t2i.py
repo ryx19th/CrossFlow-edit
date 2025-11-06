@@ -162,6 +162,7 @@ class DiT(nn.Module):
         assert self.cond_mode in [None, 'channel', 'cross-attn', 'self-attn']
         if self.edit_mode and self.cond_mode == 'channel':
             self.in_channels *= 2
+        self.direct_map = config.direct_map if hasattr(config, "direct_map") else False
 
         self.x_embedder = PatchEmbed(self.input_size, patch_size, self.in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -251,6 +252,10 @@ class DiT(nn.Module):
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         """
+        if self.edit_mode and self.direct_map:
+            # st()
+            x, cond_image = cond_image, x # 
+
         if self.edit_mode and self.cond_mode == 'channel':
             # st()
             assert cond_image is not None
