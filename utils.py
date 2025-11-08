@@ -138,18 +138,33 @@ class TrainState(object):
         logging.info(f'load pretrained from {path}')
         state_dict = torch.load(path, map_location='cpu')
 
-        if self.nnet.edit_mode and self.nnet.cond_mode == 'channel':
-            # st()
-            # if state_dict["x_embedder.proj.weight"].shape != self.nnet.x_embedder.proj.weight.shape:
-            assert state_dict["x_embedder.proj.weight"].shape[1] * 2 == self.nnet.x_embedder.proj.weight.shape[1], f"Shape mismatch: state_dict has {state_dict['x_embedder.proj.weight'].shape} vs model has {self.nnet.x_embedder.proj.weight.shape}"
-            logging.info("Expand the x_embedder.proj.weight for edit mode.")
-            old_weight = state_dict["x_embedder.proj.weight"]
-            new_weight = torch.zeros_like(self.nnet.x_embedder.proj.weight, device=old_weight.device, dtype=old_weight.dtype)
-            new_weight[:, :old_weight.shape[1]] = old_weight
-            state_dict["x_embedder.proj.weight"] = new_weight
+        if self.nnet.edit_mode:
+            if self.nnet.cond_mode == 'channel':
+                # st()
+                old_weight = state_dict["x_embedder.proj.weight"]
+                new_weight = self.nnet.x_embedder.proj.weight
+                assert old_weight.shape[1] * 2 == new_weight.shape[1], f"Shape mismatch: state_dict has {old_weight.shape} vs model has {new_weight.shape}"
+                logging.info("Expand the x_embedder.proj.weight for edit mode.")
+                # full_weight = torch.zeros_like(new_weight, device=old_weight.device, dtype=old_weight.dtype)
+                # full_weight[:, :old_weight.shape[1]] = old_weight
+                # full_weight[:, old_weight.shape[1]:] = new_weight[:, old_weight.shape[1]:]
+                full_weight = torch.cat([old_weight, old_weight], dim=1) # should be ok as the input x and cond_x are very similar images after all
+                state_dict["x_embedder.proj.weight"] = full_weight
+            # elif self.nnet.cond_mode == 'cross-attn' and self.nnet.use_cross_attn:
+            #     # st()
+            #     # Expand adaLN_modulation output channels
+            #     for key in state_dict.keys():
+            #         if "blocks" in key and "adaLN_modulation" in key and ("weight" in key or "bias" in key):
+            #             old_weight = state_dict[key]
+            #             new_weight = self.nnet.state_dict()[key]
+            #             assert old_weight.shape[0] // 6 == new_weight.shape[0] // 9, f"Shape mismatch for {key}: state_dict has {old_weight.shape} vs model has {new_weight.shape}"
+            #             full_weight = torch.zeros_like(new_weight, device=old_weight.device, dtype=old_weight.dtype)
+            #             full_weight[:old_weight.shape[0]] = old_weight
+            #             full_weight[old_weight.shape[0]:] = new_weight[old_weight.shape[0]:]
+            #             state_dict[key] = full_weight
 
-        self.nnet.load_state_dict(state_dict)
-        self.nnet_ema.load_state_dict(state_dict)
+        self.nnet.load_state_dict(state_dict, strict=False )
+        self.nnet_ema.load_state_dict(state_dict, strict=False )
 
     def load(self, path):
         logging.info(f'load from {path}')

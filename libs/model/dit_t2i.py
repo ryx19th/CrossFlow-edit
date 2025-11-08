@@ -13,6 +13,8 @@ import torch.utils.checkpoint
 
 from .trans_autoencoder import TransEncoder, Adaptor
 
+from ipdb import set_trace as st
+
 
 def modulate(x, shift, scale):
     if shift.ndim < x.ndim:
@@ -86,7 +88,7 @@ class DiTBlock(nn.Module):
     """
     A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_cross_attn=False, **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, **block_kwargs)
@@ -94,22 +96,45 @@ class DiTBlock(nn.Module):
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         approx_gelu = lambda: nn.GELU(approximate="tanh")
         self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
+
+        self.use_cross_attn = use_cross_attn
+        if self.use_cross_attn:
+            self.cross_attn = nn.MultiheadAttention(
+                embed_dim=hidden_size,
+                num_heads=num_heads,
+                dropout=0.0,
+                batch_first=True,
+                kdim=hidden_size,
+                vdim=hidden_size,
+            )
+            self.norm_ca = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+            nn.Linear(hidden_size, hidden_size * 6, bias=True),
+            # nn.Linear(hidden_size, hidden_size * (9 if self.use_cross_attn else 6), bias=True),
         )
 
-    def forward(self, x, c):
-        return torch.utils.checkpoint.checkpoint(self._forward, x, c)
-        # return self._forward(x, c)
-    
-    def _forward(self, x, c):
+    def forward(self, x, c, cond_x=None, cond_mask=None):
+        return torch.utils.checkpoint.checkpoint(self._forward, x, c, cond_x, cond_mask)
+        # return self._forward(x, c, cond_x)
+
+    def _forward(self, x, c, cond_x=None, cond_mask=None):
         # st() 
+        # if self.use_cross_attn:
+        #     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp, shift_ca, scale_ca, gate_ca = self.adaLN_modulation(c).chunk(9, dim=-1)
+        # else:
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1) # Note -1 
         if gate_msa.ndim < 3:
             gate_msa = gate_msa.unsqueeze(1)
             gate_mlp = gate_mlp.unsqueeze(1)
+            # if self.use_cross_attn:
+            #     gate_ca = gate_ca.unsqueeze(1)
+
         x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        if self.use_cross_attn:
+            # x = x + gate_ca * self.cross_attn(modulate(self.norm_ca(x), shift_ca, scale_ca), cond_x, cond_x)[0] 
+            x = x + self.cross_attn(self.norm_ca(x), cond_x, cond_x, key_padding_mask=cond_mask)[0] 
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
@@ -163,6 +188,7 @@ class DiT(nn.Module):
         if self.edit_mode and self.cond_mode == 'channel':
             self.in_channels *= 2
         self.direct_map = config.direct_map if hasattr(config, "direct_map") else False
+        self.use_cross_attn = config.use_cross_attn if hasattr(config, "use_cross_attn") else False
 
         self.x_embedder = PatchEmbed(self.input_size, patch_size, self.in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -172,28 +198,38 @@ class DiT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
+            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_cross_attn=self.use_cross_attn) for _ in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
 
-        ######### CrossFlow related
-        if hasattr(config.textVAE, "num_down_sample_block"):
-            down_sample_block = config.textVAE.num_down_sample_block
+        self.use_textVE = not (self.edit_mode and self.cond_mode == 'cross-attn' and self.direct_map and self.use_cross_attn)
+        if self.use_textVE:
+
+            ######### CrossFlow related
+            if hasattr(config.textVAE, "num_down_sample_block"):
+                down_sample_block = config.textVAE.num_down_sample_block
+            else:
+                down_sample_block = 3
+            self.context_encoder = TransEncoder(d_model=config.clip_dim, N=config.textVAE.num_blocks, num_token=config.num_clip_token,
+                                                head_num=config.textVAE.num_attention_heads, d_ff=config.textVAE.hidden_dim, 
+                                                latten_size=config.channels * config.latent_size * config.latent_size * 2, 
+                                                down_sample_block=down_sample_block, dropout=config.textVAE.dropout_prob, last_norm=False)
+
+
+            self.open_clip, _, self.open_clip_preprocess = open_clip.create_model_and_transforms('ViT-L-16-SigLIP-256', pretrained=None) # Why not use pretrained???? 
+            self.open_clip_output = Adaptor(input_dim=1024, 
+                                        tar_dim=config.channels * config.latent_size * config.latent_size
+                                        )
+            del self.open_clip.text
+            del self.open_clip.logit_bias
+        
         else:
-            down_sample_block = 3
-        self.context_encoder = TransEncoder(d_model=config.clip_dim, N=config.textVAE.num_blocks, num_token=config.num_clip_token,
-                                            head_num=config.textVAE.num_attention_heads, d_ff=config.textVAE.hidden_dim, 
-                                            latten_size=config.channels * config.latent_size * config.latent_size * 2, 
-                                            down_sample_block=down_sample_block, dropout=config.textVAE.dropout_prob, last_norm=False)
-
-
-        self.open_clip, _, self.open_clip_preprocess = open_clip.create_model_and_transforms('ViT-L-16-SigLIP-256', pretrained=None)
-        self.open_clip_output = Adaptor(input_dim=1024, 
-                                    tar_dim=config.channels * config.latent_size * config.latent_size
-                                    )
-        del self.open_clip.text
-        del self.open_clip.logit_bias
+            self.cond_embedder = nn.Sequential(
+                nn.Linear(config.clip_dim, hidden_size, bias=True),
+                # nn.LayerNorm(hidden_size),
+                # Act? glue or tanh etc
+            )
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -246,15 +282,16 @@ class DiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def _forward(self, x, t, null_indicator, cond_image=None):
+    def _forward(self, x, t, null_indicator, cond_image=None, cond_mask=None):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         t: (N,) tensor of diffusion timesteps
         """
-        if self.edit_mode and self.direct_map:
-            # st()
-            x, cond_image = cond_image, x # 
+        # if self.edit_mode and self.direct_map:
+        #     # st()
+        #     x, cond_image = cond_image, x # 
+        # BUG BUG BUG !!!!!!!! Should not only switch here -- earlier schedule, intermediate target etc. need to be calculated based on the switched variables !!!!!! BUG BUG BUG TODO TODO TODO 
 
         if self.edit_mode and self.cond_mode == 'channel':
             # st()
@@ -272,20 +309,33 @@ class DiT(nn.Module):
             cond_x = self.x_embedder(cond_image) + self.pos_embed # 
             x = torch.cat([x, cond_x], dim=1)
 
-        if self.edit_mode and self.cond_mode == 'cross-attn':
-            # st()
+        if self.edit_mode and self.cond_mode == 'cross-attn' and self.use_textVE:
             assert cond_image is not None
             cond_x = self.x_embedder(cond_image) + self.pos_embed  # (N, T, D)
-            y = y.unsqueeze(1)  # (N, 1, D)
-            # y = torch.cat([y, cond_x], dim=-2)  # (N, 1+T, D)
-            y = y + cond_x
-            # NOTE TODO No dedicated Cross Attn (sequential concat) here, so have to do AdaLN (turn to spatial), or have to implement additional Cross Attn (sequential concat) from scratch! NOTE TODO # 
-            # (This might also be one of advantages of CF, that no sequential concat Cross Attn is needed! (not bcuz of compact save by dit, but bcuz of no cond any more by direct mapping!) -- (and btw not highlighted, so my temp attn etc. also)
-            t = t.unsqueeze(1)  # (N, 1, D)
+            if not self.use_cross_attn :
+                # st()
+                y = y.unsqueeze(1)  # (N, 1, D)
+                # y = torch.cat([y, cond_x], dim=-2)  # (N, 1+T, D)
+                y = y + cond_x
+                # NOTE TODO No dedicated Cross Attn (sequential concat) here, so have to do AdaLN (turn to spatial), or have to implement additional Cross Attn (sequential concat) from scratch! NOTE TODO # 
+                # (This might also be one of advantages of CF, that no sequential concat Cross Attn is needed! (not bcuz of compact save by dit, but bcuz of no cond any more by direct mapping!) -- (and btw not highlighted, so my temp attn etc. also)
+                t = t.unsqueeze(1)  # (N, 1, D)
 
         c = t + y                                # (N, D)
+
+        if not self.use_textVE:
+            # st()
+            cond_x = self.cond_embedder(cond_image)  # (N, L, D)
+            assert cond_mask is not None 
+            cond_mask = cond_mask.bool()
+        else:
+            cond_mask = None  
+
         for block in self.blocks:
-            x = block(x, c)                      # (N, T, D)
+            if self.edit_mode and self.cond_mode == 'cross-attn' and self.use_cross_attn:
+                x = block(x, c, cond_x=cond_x, cond_mask=cond_mask )                      # (N, T, D)
+            else:
+                x = block(x, c)                      # (N, T, D)
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
 
         if self.edit_mode and self.cond_mode == 'self-attn':
@@ -331,7 +381,7 @@ class DiT(nn.Module):
 
         return image_latent, self.open_clip.logit_scale
 
-    def forward(self, x, t = None, log_snr = None, text_encoder=False, text_decoder=False, image_clip=False, shape=None, mask=None, null_indicator=None, cond_image=None):
+    def forward(self, x, t = None, log_snr = None, text_encoder=False, text_decoder=False, image_clip=False, shape=None, mask=None, null_indicator=None, cond_image=None, cond_mask=None):
         if text_encoder:
             return self._text_encoder(condition_context = x, tar_shape=shape, mask=mask)
         elif text_decoder:
@@ -340,7 +390,7 @@ class DiT(nn.Module):
         elif image_clip:
             return self._img_clip(image_input = x) 
         else:
-            return self._forward(x = x, t = t, null_indicator=null_indicator, cond_image=cond_image)
+            return self._forward(x = x, t = t, null_indicator=null_indicator, cond_image=cond_image, cond_mask=cond_mask)
 
 
 #################################################################################

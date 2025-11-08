@@ -194,8 +194,10 @@ def train(config):
             _batch_con, _batch_mask, _batch_token = encode_text_clip(_batch_caption)
         # st()
 
+        use_textVE = not (edit_mode and nnet.cond_mode == 'cross-attn' and nnet.direct_map and nnet.use_cross_attn)
+
         loss, loss_dict = _flow_mathcing_model(_z, nnet, loss_coeffs=config.loss_coeffs, cond=_batch_con, con_mask=_batch_mask, batch_img_clip=_batch_img_ori, \
-            nnet_style=config.nnet.name, text_token=_batch_token, model_config=config.nnet.model_args, all_config=config, training_step=train_state.step, cond_image=_z_cond if edit_mode else None)
+            nnet_style=config.nnet.name, text_token=_batch_token, model_config=config.nnet.model_args, all_config=config, training_step=train_state.step, cond_image=_z_cond if edit_mode else None, use_textVE=use_textVE)
 
         _metrics['loss'] = accelerator.gather(loss.detach()).mean()
         for key in loss_dict.keys():
@@ -207,12 +209,23 @@ def train(config):
         train_state.step += 1
         return dict(lr=train_state.optimizer.param_groups[0]['lr'], **_metrics)
 
-    def ode_fm_solver_sample(nnet_ema, _n_samples, _sample_steps, context=None, caption=None, testbatch_img_blurred=None, two_stage_generation=-1, token_mask=None, return_clipScore=False, ClipSocre_model=None, cond_image=None):
+    def ode_fm_solver_sample(nnet_ema, _n_samples, _sample_steps, context=None, caption=None, testbatch_img_blurred=None, two_stage_generation=-1, token_mask=None, return_clipScore=False, ClipSocre_model=None, cond_image=None, use_textVE=True):
         with torch.no_grad():
-            _z_gaussian = torch.randn(_n_samples, *config.z_shape, device=device)
-                
-            _z_x0, _mu, _log_var = nnet_ema(context, text_encoder = True, shape = _z_gaussian.shape, mask=token_mask)
-            _z_init = _z_x0.reshape(_z_gaussian.shape)
+
+            if use_textVE:
+
+                _z_gaussian = torch.randn(_n_samples, *config.z_shape, device=device)
+                    
+                _z_x0, _mu, _log_var = nnet_ema(context, text_encoder = True, shape = _z_gaussian.shape, mask=token_mask)
+                _z_init = _z_x0.reshape(_z_gaussian.shape)
+            
+            else:
+                # st()
+                _z_init = context
+            # /\ 
+            if nnet_ema.edit_mode and nnet_ema.direct_map : 
+                # st()
+                _z_init, cond_image = cond_image, _z_init
             
             assert config.sample.scale > 1
             _cfg = config.sample.scale
@@ -221,7 +234,7 @@ def train(config):
 
             ode_solver = ODEEulerFlowMatchingSolver(nnet_ema, step_size_type="step_in_dsigma", guidance_scale=_cfg ) 
             # st() 
-            _z, _ = ode_solver.sample(x_T=_z_init, batch_size=_n_samples, sample_steps=_sample_steps, unconditional_guidance_scale=_cfg, has_null_indicator=has_null_indicator, cond_image=cond_image )
+            _z, _ = ode_solver.sample(x_T=_z_init, batch_size=_n_samples, sample_steps=_sample_steps, unconditional_guidance_scale=_cfg, has_null_indicator=has_null_indicator, cond_image=cond_image, cond_mask=token_mask )
 
             image_unprocessed = decode(_z)
 
@@ -231,38 +244,38 @@ def train(config):
             else:
                 return image_unprocessed
 
-    def eval_step(n_samples, sample_steps):
-        logging.info(f'eval_step: n_samples={n_samples}, sample_steps={sample_steps}, algorithm=ODE_Euler_Flow_Matching_Solver, '
-                     f'mini_batch_size={config.sample.mini_batch_size}')
+    # def eval_step(n_samples, sample_steps):
+    #     logging.info(f'eval_step: n_samples={n_samples}, sample_steps={sample_steps}, algorithm=ODE_Euler_Flow_Matching_Solver, '
+    #                  f'mini_batch_size={config.sample.mini_batch_size}')
         
-        def sample_fn(_n_samples, return_caption=False, return_clipScore=False, ClipSocre_model=None, config=None):
-            _context, _token_mask, _token, _caption, _testbatch_img_blurred = next(context_generator)
-            assert _context.size(0) == _n_samples
-            assert not return_caption # during training we should not use this 
-            if return_caption:
-                return ode_fm_solver_sample(nnet_ema, _n_samples, sample_steps, context=_context, token_mask=_token_mask), _caption
-            elif return_clipScore:
-                return ode_fm_solver_sample(nnet_ema, _n_samples, sample_steps, context=_context, token_mask=_token_mask, return_clipScore=return_clipScore, ClipSocre_model=ClipSocre_model, caption=_caption)
-            else:
-                return ode_fm_solver_sample(nnet_ema, _n_samples, sample_steps, context=_context, token_mask=_token_mask)
+    #     def sample_fn(_n_samples, return_caption=False, return_clipScore=False, ClipSocre_model=None, config=None):
+    #         _context, _token_mask, _token, _caption, _testbatch_img_blurred = next(context_generator)
+    #         assert _context.size(0) == _n_samples
+    #         assert not return_caption # during training we should not use this 
+    #         if return_caption:
+    #             return ode_fm_solver_sample(nnet_ema, _n_samples, sample_steps, context=_context, token_mask=_token_mask), _caption
+    #         elif return_clipScore:
+    #             return ode_fm_solver_sample(nnet_ema, _n_samples, sample_steps, context=_context, token_mask=_token_mask, return_clipScore=return_clipScore, ClipSocre_model=ClipSocre_model, caption=_caption)
+    #         else:
+    #             return ode_fm_solver_sample(nnet_ema, _n_samples, sample_steps, context=_context, token_mask=_token_mask)
 
-        with tempfile.TemporaryDirectory() as temp_path:
-            path = config.sample.path or temp_path
-            if accelerator.is_main_process:
-                os.makedirs(path, exist_ok=True)
-            clip_score_list = utils.sample2dir(accelerator, path, n_samples, config.sample.mini_batch_size, sample_fn, dataset.unpreprocess, return_clipScore=True, ClipSocre_model=ClipSocre_model, config=config)
-            _fid = 0
-            if accelerator.is_main_process:
-                _fid = calculate_fid_given_paths((dataset.fid_stat, path))
-                _clip_score_list = torch.cat(clip_score_list)
-                logging.info(f'step={train_state.step} fid{n_samples}={_fid} clip_score{len(_clip_score_list)} = {_clip_score_list.mean().item()}')
-                with open(os.path.join(config.workdir, 'eval.log'), 'a') as f:
-                    print(f'step={train_state.step} fid{n_samples}={_fid} clip_score{len(_clip_score_list)} = {_clip_score_list.mean().item()}', file=f)
-                wandb.log({f'fid{n_samples}': _fid}, step=train_state.step)
-            _fid = torch.tensor(_fid, device=device)
-            _fid = accelerator.reduce(_fid, reduction='sum')
+    #     with tempfile.TemporaryDirectory() as temp_path:
+    #         path = config.sample.path or temp_path
+    #         if accelerator.is_main_process:
+    #             os.makedirs(path, exist_ok=True)
+    #         clip_score_list = utils.sample2dir(accelerator, path, n_samples, config.sample.mini_batch_size, sample_fn, dataset.unpreprocess, return_clipScore=True, ClipSocre_model=ClipSocre_model, config=config)
+    #         _fid = 0
+    #         if accelerator.is_main_process:
+    #             _fid = calculate_fid_given_paths((dataset.fid_stat, path))
+    #             _clip_score_list = torch.cat(clip_score_list)
+    #             logging.info(f'step={train_state.step} fid{n_samples}={_fid} clip_score{len(_clip_score_list)} = {_clip_score_list.mean().item()}')
+    #             with open(os.path.join(config.workdir, 'eval.log'), 'a') as f:
+    #                 print(f'step={train_state.step} fid{n_samples}={_fid} clip_score{len(_clip_score_list)} = {_clip_score_list.mean().item()}', file=f)
+    #             wandb.log({f'fid{n_samples}': _fid}, step=train_state.step)
+    #         _fid = torch.tensor(_fid, device=device)
+    #         _fid = accelerator.reduce(_fid, reduction='sum')
 
-        return _fid.item()
+    #     return _fid.item()
 
     logging.info(f'Start fitting, step={train_state.step}, mixed_precision={config.mixed_precision}')
 
@@ -317,7 +330,8 @@ def train(config):
             #     token_mask = None
             # else:
             #     raise NotImplementedError
-            samples = ode_fm_solver_sample(nnet_ema, _n_samples=config.train.n_samples_eval, _sample_steps=50, context=contexts, token_mask=token_mask, cond_image=_z_cond if edit_mode else None)
+            use_textVE = not (edit_mode and nnet_ema.cond_mode == 'cross-attn' and nnet_ema.direct_map and nnet_ema.use_cross_attn)
+            samples = ode_fm_solver_sample(nnet_ema, _n_samples=config.train.n_samples_eval, _sample_steps=50, context=contexts, token_mask=token_mask, cond_image=_z_cond if edit_mode else None, use_textVE=use_textVE )
             # st()
             samples = dataset.unpreprocess(samples)
             gt_samples = dataset.unpreprocess(_batch_img_ori)
@@ -356,7 +370,7 @@ def train(config):
     # train_state.load(os.path.join(config.ckpt_root, f'{step_best}.ckpt'))
     del metrics
     accelerator.wait_for_everyone()
-    eval_step(n_samples=config.sample.n_samples, sample_steps=config.sample.sample_steps)
+    # eval_step(n_samples=config.sample.n_samples, sample_steps=config.sample.sample_steps)
 
 
 
@@ -402,7 +416,13 @@ def main(argv):
     config = FLAGS.config
     config.config_name = get_config_name()
     config.hparams = get_hparams()
-    config.workdir = FLAGS.workdir or os.path.join('workdir', config.config_name, config.hparams)
+    if FLAGS.workdir is not None:
+        config.workdir = FLAGS.workdir
+    elif config.get('workdir', None) is not None:
+        config.workdir = os.path.join('workdir', config.workdir)
+    else:
+        config.workdir = os.path.join('workdir', config.config_name, config.hparams)
+    print('Workdir: ', config.workdir)
     config.ckpt_root = os.path.join(config.workdir, 'ckpts')
     config.sample_dir = os.path.join(config.workdir, 'samples')
     train(config)

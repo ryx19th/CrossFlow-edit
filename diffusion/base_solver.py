@@ -151,6 +151,7 @@ class Solver:
         do_make_schedule=True,
 
         cond_image=None,
+        cond_mask=None,
         **kwargs,
     ):
         self.num_inf_timesteps = sample_steps
@@ -183,6 +184,7 @@ class Solver:
             start_timestep=start_timestep,
 
             cond_image=cond_image,
+            cond_mask=cond_mask,
         )
         return samples, intermediates
 
@@ -195,17 +197,18 @@ class Solver:
         has_null_indicator,
 
         cond_image=None,
+        cond_mask=None,
     ):
 
         log_snr = 4 - t_continuous * 8 # inversed
 
         if has_null_indicator:
-            _cond = self.model(x, t=t_continuous, log_snr=log_snr, null_indicator=torch.tensor([False] * x.shape[0]).to(x.device), cond_image=cond_image)[-1]
-            _uncond = self.model(x, t=t_continuous, log_snr=log_snr, null_indicator=torch.tensor([True] * x.shape[0]).to(x.device), cond_image=cond_image)[-1]
+            _cond = self.model(x, t=t_continuous, log_snr=log_snr, null_indicator=torch.tensor([False] * x.shape[0]).to(x.device), cond_image=cond_image, cond_mask=cond_mask)[-1]
+            _uncond = self.model(x, t=t_continuous, log_snr=log_snr, null_indicator=torch.tensor([True] * x.shape[0]).to(x.device), cond_image=cond_image, cond_mask=cond_mask)[-1]
 
             assert unconditional_guidance_scale > 1
             return _uncond + unconditional_guidance_scale * (_cond - _uncond)
         else:
-            _cond = self.model(x, log_snr=log_snr, cond_image=cond_image)[-1]
+            _cond = self.model(x, log_snr=log_snr, cond_image=cond_image, cond_mask=cond_mask)[-1]
             return _cond
 

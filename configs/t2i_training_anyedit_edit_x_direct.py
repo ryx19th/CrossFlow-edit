@@ -87,6 +87,7 @@ model = Args(
     edit_mode=True,
     cond_mode='cross-attn', # 'channel', # 'self-attn', #              # ['channel', 'cross-attn', 'self-attn'] 
     direct_map=True,
+    use_cross_attn=True, # False, # 
 )
 
 def d(**kwargs):
@@ -156,6 +157,8 @@ def get_config():
     config.load_from = 'pretrained_models/t2i_512px_t5_dit.pth' # 'pretrained_models/t2i_512px_clip_dimr.pth' # 
 
     config.edit_mode = True
+
+    config.workdir = 't2i_anyedit_edit_direct_x_direct_xattn' # 't2i_anyedit_edit_x_direct' # 
 
     return config
 

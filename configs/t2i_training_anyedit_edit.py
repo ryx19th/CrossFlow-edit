@@ -156,6 +156,8 @@ def get_config():
 
     config.edit_mode = True
 
+    config.workdir = 't2i_anyedit_edit_dup' # 't2i_anyedit_edit' # 
+
     return config
 
 
