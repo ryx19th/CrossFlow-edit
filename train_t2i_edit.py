@@ -162,6 +162,26 @@ def train(config):
 
     _flow_mathcing_model = FlowMatching()
 
+    def encode_all_prompts(_batch, llm_fn, do_regular_cfg):
+        if isinstance(_batch[0], list):
+            assert len(_batch) == 2
+            _batch_con, _batch_mask, _batch_token = llm_fn(_batch[0])
+            _batch_con_src, _batch_mask_src, _batch_token_src = llm_fn(_batch[1])
+            _batch_con = torch.cat([_batch_con, _batch_con_src], dim=1)
+            _batch_mask = torch.cat([_batch_mask, _batch_mask_src], dim=1)
+            _batch_token = torch.cat([_batch_token, _batch_token_src], dim=1)
+        else:
+            _batch_con, _batch_mask, _batch_token = llm_fn(_batch)
+        if do_regular_cfg:
+            _null_con, _null_mask, _null_token = llm_fn([''])
+            if isinstance(_batch[0], list):
+                _null_con = torch.cat([_null_con, _null_con], dim=1)
+                _null_mask = torch.cat([_null_mask, _null_mask], dim=1)
+                _null_token = torch.cat([_null_token, _null_token], dim=1)
+            _null_context = {'cond': _null_con, 'con_mask': _null_mask, 'text_token': _null_token}
+        # st()
+        return _batch_con, _batch_mask, _batch_token, _null_context
+
     def train_step(_batch, _ss_empty_context, llm, t5, clip):
         _metrics = dict()
         optimizer.zero_grad()
@@ -169,6 +189,7 @@ def train(config):
         # st()
 
         edit_mode = config.get('edit_mode', False)
+        do_regular_cfg = nnet.do_regular_cfg if hasattr(nnet, "do_regular_cfg") else False
 
         assert len(_batch) == 3 if edit_mode else 2
         assert not config.dataset.cfg
@@ -189,15 +210,15 @@ def train(config):
             _z_cond = encode(_batch_img_src_ori)
 
         if llm == 't5':
-            _batch_con, _batch_mask, _batch_token = encode_text_t5(_batch_caption)
+            llm_fn = encode_text_t5
         elif llm == 'clip':
-            _batch_con, _batch_mask, _batch_token = encode_text_clip(_batch_caption)
-        # st()
+            llm_fn = encode_text_clip
+        _batch_con, _batch_mask, _batch_token, _null_context = encode_all_prompts(_batch_caption, llm_fn, do_regular_cfg)
 
         use_textVE = not (edit_mode and nnet.cond_mode == 'cross-attn' and nnet.direct_map and nnet.use_cross_attn)
 
         loss, loss_dict = _flow_mathcing_model(_z, nnet, loss_coeffs=config.loss_coeffs, cond=_batch_con, con_mask=_batch_mask, batch_img_clip=_batch_img_ori, \
-            nnet_style=config.nnet.name, text_token=_batch_token, model_config=config.nnet.model_args, all_config=config, training_step=train_state.step, cond_image=_z_cond if edit_mode else None, use_textVE=use_textVE)
+            nnet_style=config.nnet.name, text_token=_batch_token, model_config=config.nnet.model_args, all_config=config, training_step=train_state.step, cond_image=_z_cond if edit_mode else None, use_textVE=use_textVE, _null_context=_null_context if do_regular_cfg else None)
 
         _metrics['loss'] = accelerator.gather(loss.detach()).mean()
         for key in loss_dict.keys():
@@ -209,7 +230,7 @@ def train(config):
         train_state.step += 1
         return dict(lr=train_state.optimizer.param_groups[0]['lr'], **_metrics)
 
-    def ode_fm_solver_sample(nnet_ema, _n_samples, _sample_steps, context=None, caption=None, testbatch_img_blurred=None, two_stage_generation=-1, token_mask=None, return_clipScore=False, ClipSocre_model=None, cond_image=None, use_textVE=True):
+    def ode_fm_solver_sample(nnet_ema, _n_samples, _sample_steps, context=None, caption=None, testbatch_img_blurred=None, two_stage_generation=-1, token_mask=None, return_clipScore=False, ClipSocre_model=None, cond_image=None, use_textVE=True, _null_context=None):
         with torch.no_grad():
 
             if use_textVE:
@@ -231,10 +252,11 @@ def train(config):
             _cfg = config.sample.scale
 
             has_null_indicator = hasattr(config.nnet.model_args, "cfg_indicator")
+            do_regular_cfg = hasattr(config.nnet.model_args, "do_regular_cfg")
 
             ode_solver = ODEEulerFlowMatchingSolver(nnet_ema, step_size_type="step_in_dsigma", guidance_scale=_cfg ) 
             # st() 
-            _z, _ = ode_solver.sample(x_T=_z_init, batch_size=_n_samples, sample_steps=_sample_steps, unconditional_guidance_scale=_cfg, has_null_indicator=has_null_indicator, cond_image=cond_image, cond_mask=token_mask )
+            _z, _ = ode_solver.sample(x_T=_z_init, batch_size=_n_samples, sample_steps=_sample_steps, unconditional_guidance_scale=_cfg, has_null_indicator=has_null_indicator, cond_image=cond_image, cond_mask=token_mask, do_regular_cfg=do_regular_cfg, _null_context=_null_context if do_regular_cfg else None)
 
             image_unprocessed = decode(_z)
 
@@ -296,6 +318,7 @@ def train(config):
             torch.cuda.empty_cache()
             logging.info('Save a grid of images...')
             edit_mode = config.get('edit_mode', False)
+            do_regular_cfg = nnet_ema.do_regular_cfg if hasattr(nnet, "do_regular_cfg") else False
             # st()
             # batch = tree_map(lambda x: x, next(test_data_generator))
             # for batch in test_dataset_loader: break 
@@ -316,10 +339,17 @@ def train(config):
                 _z_cond = encode(_batch_img_src_ori)
             _batch_caption = batch[1]
             print(_batch_caption)
+            if isinstance(_batch_caption[0], list):
+                _batch_caption_ = [[], []]
+                for _b_c in _batch_caption:
+                    _batch_caption_[0].append(_b_c[0])
+                    _batch_caption_[1].append(_b_c[1])
+                _batch_caption = _batch_caption_
             if llm == 't5':
-                _batch_con, _batch_mask, _batch_token = encode_text_t5(_batch_caption)
+                llm_fn = encode_text_t5
             elif llm == 'clip':
-                _batch_con, _batch_mask, _batch_token = encode_text_clip(_batch_caption)
+                llm_fn = encode_text_clip
+            _batch_con, _batch_mask, _batch_token, _null_context = encode_all_prompts(_batch_caption, llm_fn, do_regular_cfg)
             contexts = _batch_con
             token_mask = _batch_mask
             # if hasattr(dataset, "token_embedding"):
@@ -331,7 +361,8 @@ def train(config):
             # else:
             #     raise NotImplementedError
             use_textVE = not (edit_mode and nnet_ema.cond_mode == 'cross-attn' and nnet_ema.direct_map and nnet_ema.use_cross_attn)
-            samples = ode_fm_solver_sample(nnet_ema, _n_samples=config.train.n_samples_eval, _sample_steps=50, context=contexts, token_mask=token_mask, cond_image=_z_cond if edit_mode else None, use_textVE=use_textVE )
+            # st()
+            samples = ode_fm_solver_sample(nnet_ema, _n_samples=config.train.n_samples_eval, _sample_steps=50, context=contexts, token_mask=token_mask, cond_image=_z_cond if edit_mode else None, use_textVE=use_textVE, _null_context=_null_context if do_regular_cfg else None)
             # st()
             samples = dataset.unpreprocess(samples)
             gt_samples = dataset.unpreprocess(_batch_img_ori)
@@ -419,7 +450,7 @@ def main(argv):
     if FLAGS.workdir is not None:
         config.workdir = FLAGS.workdir
     elif config.get('workdir', None) is not None:
-        config.workdir = os.path.join('workdir', config.workdir)
+        config.workdir = os.path.join('workdir', config.workdir, config.hparams)
     else:
         config.workdir = os.path.join('workdir', config.config_name, config.hparams)
     print('Workdir: ', config.workdir)

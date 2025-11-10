@@ -167,7 +167,7 @@ class TrainState(object):
         self.nnet_ema.load_state_dict(state_dict, strict=False )
 
     def load(self, path):
-        logging.info(f'load from {path}')
+        # logging.info(f'load from {path}') 
         self.step = torch.load(os.path.join(path, 'step.pth'))
         for key, val in self.__dict__.items():
             if key != 'step' and val is not None:
@@ -185,6 +185,7 @@ class TrainState(object):
         ckpt_path = os.path.join(ckpt_root, f'{step}.ckpt')
         logging.info(f'resume from {ckpt_path}')
         self.load(ckpt_path)
+        self.step = step # 
 
     def to(self, device):
         for key, val in self.__dict__.items():

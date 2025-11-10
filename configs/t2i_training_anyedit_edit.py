@@ -110,8 +110,8 @@ def get_config():
         mode='cond',
         log_interval=10,
         eval_interval=100,                                       # iteration interval for visual testing on the specified prompt
-        save_interval=1000,                                      # iteration interval for saving checkpoints and testing FID
-        n_samples_eval=5,                                       # number of samples duing visual testing. This depends on your GPU memory and can be any integer between 1 and 15 (as we provide only 15 prompts).
+        save_interval=5000,                                      # iteration interval for saving checkpoints and testing FID
+        n_samples_eval=8,                                       # number of samples duing visual testing. This depends on your GPU memory and can be any integer between 1 and 15 (as we provide only 15 prompts).
     )
 
     config.optimizer = d(
@@ -137,8 +137,8 @@ def get_config():
         name='ImageDataset',                               # dataset name
         resolution=512,                                         # dataset resolution
         llm='t5', # 'clip', #                                            # language model to generate language embedding
-        train_path='anyedit_all',     # training set path
-        val_path='anyedit_val',      # val set path
+        train_path='anyedit_1k', # 'anyedit_all', #      # training set path
+        val_path='anyedit_1k', # 'anyedit_val', #       # val set path
         cfg=False,
         edit_mode=True,
     )
@@ -156,7 +156,7 @@ def get_config():
 
     config.edit_mode = True
 
-    config.workdir = 't2i_anyedit_edit_dup' # 't2i_anyedit_edit' # 
+    config.workdir = 't2i_training_anyedit_edit_overfit' # 't2i_anyedit_edit_dup' # 
 
     return config
 

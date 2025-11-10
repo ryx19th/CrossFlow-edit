@@ -218,7 +218,7 @@ def get_feature_dir_info(root):
 
 
 class ImageDataset(Dataset):
-    def __init__(self, root, resolution, llm, edit_mode=False):
+    def __init__(self, root, resolution, llm, edit_mode=False, prompt_mode='output'):
         super().__init__()
         json_path = os.path.join(root,'img_text_pair.jsonl')
         self.img_root = os.path.join(root,'imgs')
@@ -229,6 +229,8 @@ class ImageDataset(Dataset):
             for line in tqdm(file):
                 self.file_list.append(json.loads(line))
         self.edit_mode = edit_mode
+        self.prompt_mode = prompt_mode
+        assert self.prompt_mode in ['output', 'dual', 'instruction']
 
     def __len__(self):
         return len(self.file_list)
@@ -243,7 +245,12 @@ class ImageDataset(Dataset):
             src_img_path = os.path.join(self.img_root, data_item['img_src'])
             img_src = self.load_process_image(src_img_path)
 
-        prompt = data_item['prompt']
+        if self.prompt_mode == 'output':
+            prompt = data_item['prompt']
+        elif self.prompt_mode == 'dual':
+            prompt = [data_item['prompt'], data_item['prompt_src']]
+        elif self.prompt_mode == 'instruction':
+            prompt = data_item['prompt_inst']
 
         if self.edit_mode:
             return img, prompt, img_src
@@ -262,13 +269,13 @@ class ImageDataset(Dataset):
 
 
 class ImageFullDataset(DatasetFactory):  # the moments calculated by Stable Diffusion image encoder & the contexts calculated by clip
-    def __init__(self, train_path, val_path, resolution, llm, cfg=False, p_uncond=None, fix_test_order=False, edit_mode=False):
+    def __init__(self, train_path, val_path, resolution, llm, cfg=False, p_uncond=None, fix_test_order=False, edit_mode=False, prompt_mode='output'):
         super().__init__()
         print('Prepare dataset...')
         self.resolution = resolution
 
-        self.train = ImageDataset(train_path, resolution=resolution, llm=llm, edit_mode=edit_mode)
-        self.test = ImageDataset(val_path, resolution=resolution, llm=llm, edit_mode=edit_mode)
+        self.train = ImageDataset(train_path, resolution=resolution, llm=llm, edit_mode=edit_mode, prompt_mode=prompt_mode)
+        self.test = ImageDataset(val_path, resolution=resolution, llm=llm, edit_mode=edit_mode, prompt_mode=prompt_mode)
         
         print('Prepare dataset ok')
 

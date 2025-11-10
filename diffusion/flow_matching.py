@@ -326,8 +326,6 @@ class FlowMatching(nn.Module):
         return_raw_loss=False,
         additional_embeddings=None,
         timesteps: Optional[Tuple[int, int]] = None,
-
-        cond_image=None,
         *args,
         **kwargs,
     ):
@@ -341,7 +339,7 @@ class FlowMatching(nn.Module):
             else:
                 standard_diffusion=False
             return self.p_losses_textVAE(
-                x, cond, con_mask, timesteps, nnet, batch_img_clip=batch_img_clip, cond_ori=cond_ori, con_mask_ori=con_mask_ori, text_token=text_token, loss_coeffs=loss_coeffs, return_raw_loss=return_raw_loss, nnet_style=nnet_style, standard_diffusion=standard_diffusion, all_config=all_config, training_step=training_step, cond_image=cond_image, *args, **kwargs
+                x, cond, con_mask, timesteps, nnet, batch_img_clip=batch_img_clip, cond_ori=cond_ori, con_mask_ori=con_mask_ori, text_token=text_token, loss_coeffs=loss_coeffs, return_raw_loss=return_raw_loss, nnet_style=nnet_style, standard_diffusion=standard_diffusion, all_config=all_config, training_step=training_step, *args, **kwargs
             )
         elif nnet_style == 'dit':
             if hasattr(model_config, "standard_diffusion") and model_config.standard_diffusion:
@@ -350,7 +348,7 @@ class FlowMatching(nn.Module):
             else:
                 standard_diffusion=False
             return self.p_losses_textVAE_dit(
-                    x, cond, con_mask, timesteps, nnet, batch_img_clip=batch_img_clip, cond_ori=cond_ori, con_mask_ori=con_mask_ori, text_token=text_token, loss_coeffs=loss_coeffs, return_raw_loss=return_raw_loss, nnet_style=nnet_style, standard_diffusion=standard_diffusion, all_config=all_config, training_step=training_step, cond_image=cond_image, *args, **kwargs
+                    x, cond, con_mask, timesteps, nnet, batch_img_clip=batch_img_clip, cond_ori=cond_ori, con_mask_ori=con_mask_ori, text_token=text_token, loss_coeffs=loss_coeffs, return_raw_loss=return_raw_loss, nnet_style=nnet_style, standard_diffusion=standard_diffusion, all_config=all_config, training_step=training_step, *args, **kwargs
                 )
         else:
             raise NotImplementedError
@@ -379,6 +377,7 @@ class FlowMatching(nn.Module):
 
         cond_image=None,
         use_textVE=True,
+        _null_context=None,
     ):
         """
         CrossFlow training for DiMR
@@ -422,7 +421,7 @@ class FlowMatching(nn.Module):
                 x_start[null_indicator] = target_null
         else:
             null_indicator = None
-        
+
 
         x_noisy = self.psi(t, x=noise, x1=x_start)
         target_velocity = self.Dt_psi(t, x=noise, x1=x_start)
@@ -465,6 +464,7 @@ class FlowMatching(nn.Module):
 
         cond_image=None,
         use_textVE=True,
+        _null_context=None,
     ):
         """
         CrossFLow training for DiT
@@ -516,6 +516,16 @@ class FlowMatching(nn.Module):
                 x_start[null_indicator] = target_null
         else:
             null_indicator = None
+
+        if hasattr(all_config.nnet.model_args, "do_regular_cfg") and all_config.nnet.model_args.do_regular_cfg:
+            prompt_dropout_prob = all_config.nnet.model_args.prompt_dropout_prob
+            assert not hasattr(all_config.nnet.model_args, "cfg_indicator") or all_config.nnet.model_args.cfg_indicator == 0, "only one of cfg_indicator and do_regular_cfg can be set"
+            assert not use_textVE and nnet.edit_mode and nnet.direct_map, "only for direct edit mode where text goes into side cross attentions"
+            # now noise has been src image latents, cond_image has been prompt text tokens
+            drop_mask = torch.rand(x_start.shape[0], device=x_start.device) < prompt_dropout_prob
+            cond_image[drop_mask] = _null_context['cond'].to(x_start.device)[0]
+            con_mask[drop_mask] = _null_context['con_mask'].to(x_start.device)[0]
+            # text_token[drop_mask] = _null_context['text_token'].to(x_start.device)[0]
         
         x_noisy = self.psi(t, x=noise, x1=x_start)
         target_velocity = self.Dt_psi(t, x=noise, x1=x_start)
@@ -532,7 +542,7 @@ class FlowMatching(nn.Module):
         else:
             loss = loss_diff
             return loss, {'loss_diff': loss_diff}
-        
+
 
     ## flow matching specific functions
     def psi(self, t, x, x1):
@@ -581,6 +591,8 @@ class ODEEulerFlowMatchingSolver(Solver):
 
         cond_image=None,
         cond_mask=None,
+        do_regular_cfg=False,
+        _null_context=None,
         **kwargs,
     ):
         """
@@ -613,6 +625,8 @@ class ODEEulerFlowMatchingSolver(Solver):
 
                 cond_image=cond_image,
                 cond_mask=cond_mask,
+                do_regular_cfg=do_regular_cfg,
+                _null_context=_null_context,
             )
             if self.step_size_type == "step_in_dsigma":
                 step_size = sigma_steps[i + 1] - sigma_steps[i]
@@ -630,9 +644,6 @@ class ODEEulerFlowMatchingSolver(Solver):
     def sample(
         self,
         *args,
-
-        cond_image=None,
-        cond_mask=None,
         **kwargs,
     ):
         assert kwargs.get("ucg_schedule", None) is None
@@ -657,9 +668,6 @@ class ODEEulerFlowMatchingSolver(Solver):
             *args,
             sampling_method=self.sample_euler,
             do_make_schedule=False,
-
-            cond_image=cond_image,
-            cond_mask=cond_mask,
             **kwargs,
         )
         return samples, intermediates

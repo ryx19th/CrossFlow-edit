@@ -189,10 +189,12 @@ class DiT(nn.Module):
             self.in_channels *= 2
         self.direct_map = config.direct_map if hasattr(config, "direct_map") else False
         self.use_cross_attn = config.use_cross_attn if hasattr(config, "use_cross_attn") else False
+        self.do_regular_cfg = config.do_regular_cfg if hasattr(config, "do_regular_cfg") else False 
 
         self.x_embedder = PatchEmbed(self.input_size, patch_size, self.in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
-        self.y_embedder = LabelEmbedder(num_classes, hidden_size)
+        if not self.do_regular_cfg:
+            self.y_embedder = LabelEmbedder(num_classes, hidden_size)
         num_patches = self.x_embedder.num_patches
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
@@ -250,7 +252,8 @@ class DiT(nn.Module):
         nn.init.constant_(self.x_embedder.proj.bias, 0)
 
         # Initialize label embedding table:
-        nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
+        if not self.do_regular_cfg:
+            nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
 
         # Initialize timestep embedding MLP:
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
@@ -301,7 +304,8 @@ class DiT(nn.Module):
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         # Altho also masked but has been masked in TextVE so always unified shape (&same as img) here? 
         t = self.t_embedder(t)                   # (N, D)
-        y = self.y_embedder(null_indicator)    # (N, D)
+        if not self.do_regular_cfg:
+            y = self.y_embedder(null_indicator)    # (N, D)
         # Note that this is only an indicator for cfg, not the real cond, as the real con is x already in CF\ 
 
         if self.edit_mode and self.cond_mode == 'self-attn':
@@ -317,11 +321,14 @@ class DiT(nn.Module):
                 y = y.unsqueeze(1)  # (N, 1, D)
                 # y = torch.cat([y, cond_x], dim=-2)  # (N, 1+T, D)
                 y = y + cond_x
-                # NOTE TODO No dedicated Cross Attn (sequential concat) here, so have to do AdaLN (turn to spatial), or have to implement additional Cross Attn (sequential concat) from scratch! NOTE TODO # 
+                # No dedicated Cross Attn (sequential concat) here, so have to do AdaLN (turn to spatial), or have to implement additional Cross Attn (sequential concat) from scratch! 
                 # (This might also be one of advantages of CF, that no sequential concat Cross Attn is needed! (not bcuz of compact save by dit, but bcuz of no cond any more by direct mapping!) -- (and btw not highlighted, so my temp attn etc. also)
                 t = t.unsqueeze(1)  # (N, 1, D)
 
-        c = t + y                                # (N, D)
+        if not self.do_regular_cfg:
+            c = t + y                                # (N, D)
+        else:
+            c = t
 
         if not self.use_textVE:
             # st()
@@ -345,19 +352,19 @@ class DiT(nn.Module):
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return [x]
 
-    def _forward_with_cfg(self, x, t, cfg_scale):
+    def _forward_with_cfg(self, x, t, cfg_scale, cond_image=None, cond_mask=None):
         """
         Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
         """
         # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
         half = x[: len(x) // 2]
         combined = torch.cat([half, half], dim=0)
-        model_out = self.forward(combined, t)
+        model_out = self.forward(combined, t, None, cond_image=cond_image, cond_mask=cond_mask)[0]
         # For exact reproducibility reasons, we apply classifier-free guidance on only
         # three channels by default. The standard approach to cfg applies it to all channels.
         # This can be done by uncommenting the following line and commenting-out the line following that.
-        # eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
-        eps, rest = model_out[:, :3], model_out[:, 3:]
+        eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
+        # eps, rest = model_out[:, :3], model_out[:, 3:]
         cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
         eps = torch.cat([half_eps, half_eps], dim=0)
@@ -381,7 +388,7 @@ class DiT(nn.Module):
 
         return image_latent, self.open_clip.logit_scale
 
-    def forward(self, x, t = None, log_snr = None, text_encoder=False, text_decoder=False, image_clip=False, shape=None, mask=None, null_indicator=None, cond_image=None, cond_mask=None):
+    def forward(self, x, t = None, log_snr = None, text_encoder=False, text_decoder=False, image_clip=False, shape=None, mask=None, null_indicator=None, cond_image=None, cond_mask=None, cfg_scale=0.0 ):
         if text_encoder:
             return self._text_encoder(condition_context = x, tar_shape=shape, mask=mask)
         elif text_decoder:
@@ -389,6 +396,8 @@ class DiT(nn.Module):
             return self._text_decoder(condition_enbedding = x, tar_shape=shape) # mask is not needed for decoder
         elif image_clip:
             return self._img_clip(image_input = x) 
+        elif cfg_scale > 0.0:
+            return self._forward_with_cfg(x, t, cfg_scale, cond_image=cond_image, cond_mask=cond_mask)
         else:
             return self._forward(x = x, t = t, null_indicator=null_indicator, cond_image=cond_image, cond_mask=cond_mask)
 

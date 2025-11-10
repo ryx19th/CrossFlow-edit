@@ -149,9 +149,6 @@ class Solver:
         start_timestep=None,
         num_timesteps=None,
         do_make_schedule=True,
-
-        cond_image=None,
-        cond_mask=None,
         **kwargs,
     ):
         self.num_inf_timesteps = sample_steps
@@ -182,9 +179,7 @@ class Solver:
             verbose=verbose,
             ucg_schedule=ucg_schedule,
             start_timestep=start_timestep,
-
-            cond_image=cond_image,
-            cond_mask=cond_mask,
+            **kwargs,
         )
         return samples, intermediates
 
@@ -198,6 +193,8 @@ class Solver:
 
         cond_image=None,
         cond_mask=None,
+        do_regular_cfg=False,
+        _null_context=None,
     ):
 
         log_snr = 4 - t_continuous * 8 # inversed
@@ -208,6 +205,18 @@ class Solver:
 
             assert unconditional_guidance_scale > 1
             return _uncond + unconditional_guidance_scale * (_cond - _uncond)
+
+        elif do_regular_cfg:
+            # st()
+            x = torch.cat([x, x], dim=0)
+            t_continuous = torch.cat([t_continuous, t_continuous], dim=0)
+            log_snr = torch.cat([log_snr, log_snr], dim=0)
+            cond_image = torch.cat([cond_image, _null_context["cond"].repeat(cond_image.shape[0], 1, 1)], dim=0)
+            cond_mask = torch.cat([cond_mask, _null_context["con_mask"].repeat(cond_mask.shape[0], 1)], dim=0)
+            _res = self.model(x, t=t_continuous, log_snr=log_snr, cond_image=cond_image, cond_mask=cond_mask, cfg_scale=unconditional_guidance_scale)
+            sample, _ = _res.chunk(2, dim=0)
+            return sample
+
         else:
             _cond = self.model(x, log_snr=log_snr, cond_image=cond_image, cond_mask=cond_mask)[-1]
             return _cond

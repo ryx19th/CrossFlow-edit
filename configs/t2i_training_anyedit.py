@@ -109,7 +109,7 @@ def get_config():
         log_interval=10,
         eval_interval=100,                                       # iteration interval for visual testing on the specified prompt
         save_interval=1000,                                      # iteration interval for saving checkpoints and testing FID
-        n_samples_eval=5,                                       # number of samples duing visual testing. This depends on your GPU memory and can be any integer between 1 and 15 (as we provide only 15 prompts).
+        n_samples_eval=8,                                       # number of samples duing visual testing. This depends on your GPU memory and can be any integer between 1 and 15 (as we provide only 15 prompts).
     )
 
     config.optimizer = d(

@@ -76,7 +76,7 @@ model = Args(
     clip_dim=4096,
     num_clip_token=77,
     gradient_checking=True, # for larger model
-    cfg_indicator=0.10,
+    # cfg_indicator=0.10,
     textVAE = Args(
         num_blocks = 11,
         hidden_dim = 1024,
@@ -88,6 +88,8 @@ model = Args(
     cond_mode='cross-attn', # 'channel', # 'self-attn', #              # ['channel', 'cross-attn', 'self-attn'] 
     direct_map=True,
     use_cross_attn=True, # False, # 
+    do_regular_cfg=True, # False, # 
+    prompt_dropout_prob=0.1, # 0.0, # 
 )
 
 def d(**kwargs):
@@ -112,8 +114,8 @@ def get_config():
         mode='cond',
         log_interval=10,
         eval_interval=100,                                       # iteration interval for visual testing on the specified prompt
-        save_interval=1000,                                      # iteration interval for saving checkpoints and testing FID
-        n_samples_eval=5,                                       # number of samples duing visual testing. This depends on your GPU memory and can be any integer between 1 and 15 (as we provide only 15 prompts).
+        save_interval=5000,                                      # iteration interval for saving checkpoints and testing FID
+        n_samples_eval=8,                                       # number of samples duing visual testing. This depends on your GPU memory and can be any integer between 1 and 15 (as we provide only 15 prompts).
     )
 
     config.optimizer = d(
@@ -139,10 +141,11 @@ def get_config():
         name='ImageDataset',                               # dataset name
         resolution=512,                                         # dataset resolution
         llm='t5', # 'clip', #                                            # language model to generate language embedding
-        train_path='anyedit_all',     # training set path
-        val_path='anyedit_val',      # val set path
+        train_path='anyedit_1k', #  'anyedit', # 'anyedit_all', #     # training set path
+        val_path='anyedit_1k', # 'anyedit_val', #                     # val set path
         cfg=False,
         edit_mode=True,
+        prompt_mode='dual', # 'instruction', # 'output', #               # ['output', 'dual', 'instruction']
     )
 
     config.sample = d(
@@ -158,7 +161,7 @@ def get_config():
 
     config.edit_mode = True
 
-    config.workdir = 't2i_anyedit_edit_direct_x_direct_xattn' # 't2i_anyedit_edit_x_direct' # 
+    config.workdir = 't2i_anyedit_edit_direct_x_direct_xattn_cfg_overfit_dualp' # 't2i_anyedit_edit_direct_x_direct_xattn_cfg_overfit_instp' # 't2i_anyedit_edit_direct_x_direct_xattn_cfg_overfit' # 't2i_anyedit_edit_direct_x_direct_xattn_cfg' # 't2i_training_anyedit_edit_direct_x_direct_xattn' # 't2i_training_anyedit_edit_x_direct' # 
 
     return config
 
