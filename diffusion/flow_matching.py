@@ -465,6 +465,7 @@ class FlowMatching(nn.Module):
         cond_image=None,
         use_textVE=True,
         _null_context=None,
+        use_PixArt=False,
     ):
         """
         CrossFLow training for DiT
@@ -500,7 +501,7 @@ class FlowMatching(nn.Module):
             noise = cond # raw prompt tokens, [B, L=77, D=4096]
         # NOTE No need to do so! as inside DiT they are exchanged so this is that -- BUG BUG BUG 
         # BUG BUG BUG Was WRONG here -- Should have switched here (or even earlier anywhere?), so that the intermediate targets etc. are all calculated based on the switched variables !!!!! TODO TODO TODO 
-        if nnet.edit_mode and nnet.direct_map : 
+        if use_PixArt or (not use_PixArt and nnet.module.edit_mode and nnet.module.direct_map) : 
             # st()
             noise, cond_image = cond_image, noise
 
@@ -517,22 +518,37 @@ class FlowMatching(nn.Module):
         else:
             null_indicator = None
 
-        if hasattr(all_config.nnet.model_args, "do_regular_cfg") and all_config.nnet.model_args.do_regular_cfg:
-            prompt_dropout_prob = all_config.nnet.model_args.prompt_dropout_prob
-            assert not hasattr(all_config.nnet.model_args, "cfg_indicator") or all_config.nnet.model_args.cfg_indicator == 0, "only one of cfg_indicator and do_regular_cfg can be set"
-            assert not use_textVE and nnet.edit_mode and nnet.direct_map, "only for direct edit mode where text goes into side cross attentions"
-            # now noise has been src image latents, cond_image has been prompt text tokens
-            drop_mask = torch.rand(x_start.shape[0], device=x_start.device) < prompt_dropout_prob
-            cond_image[drop_mask] = _null_context['cond'].to(x_start.device)[0]
-            con_mask[drop_mask] = _null_context['con_mask'].to(x_start.device)[0]
-            # text_token[drop_mask] = _null_context['text_token'].to(x_start.device)[0]
-        
+        if not use_PixArt:
+            if hasattr(all_config.nnet.model_args, "do_regular_cfg") and all_config.nnet.model_args.do_regular_cfg:
+                prompt_dropout_prob = all_config.nnet.model_args.prompt_dropout_prob
+                assert not hasattr(all_config.nnet.model_args, "cfg_indicator") or all_config.nnet.model_args.cfg_indicator == 0, "only one of cfg_indicator and do_regular_cfg can be set"
+                assert not use_textVE and nnet.module.edit_mode and nnet.module.direct_map, "only for direct edit mode where text goes into side cross attentions"
+                # now noise has been src image latents, cond_image has been prompt text tokens
+                drop_mask = torch.rand(x_start.shape[0], device=x_start.device) < prompt_dropout_prob
+                cond_image[drop_mask] = _null_context['cond'].to(x_start.device)[0]
+                con_mask[drop_mask] = _null_context['con_mask'].to(x_start.device)[0]
+                # text_token[drop_mask] = _null_context['text_token'].to(x_start.device)[0]
+
         x_noisy = self.psi(t, x=noise, x1=x_start)
         target_velocity = self.Dt_psi(t, x=noise, x1=x_start)
 
         prediction = nnet(x_noisy, t = t, null_indicator = null_indicator, cond_image = cond_image, cond_mask = con_mask )[0]
 
         loss_diff = self.mos(prediction - target_velocity)
+        # st()
+
+        # loss_diff = F.smooth_l1_loss(prediction, target_velocity, reduction='none', beta=0.5).mean(dim=(1,2,3))
+
+        # # per-sample 权重，压尾部同时提升大改动样本的相对贡献
+        # w_s = (target_velocity.flatten(1).norm(dim=1) + 1e-6).pow(-0.5)   # 或 -1.0
+        # # per-pixel 权重，聚焦编辑区域（用Δ的幅值或其平滑版）
+        # w_p = (target_velocity.abs().mean(dim=1, keepdim=True))           # [B,1,H,W]；可再做高斯平滑/阈值-TopK
+        # loss_diff = (((prediction - target_velocity)**2) * w_p).flatten(1).mean(dim=1) * w_s
+
+        # vp, vt = prediction.flatten(1), target_velocity.flatten(1)
+        # loss_dir = 1 - F.cosine_similarity(vp, vt, dim=1)
+        # loss_mag = (vp.norm(dim=1) - vt.norm(dim=1)).abs()
+        # loss_diff = loss_dir + 0.1 * loss_mag
 
         ###########
 
@@ -593,6 +609,7 @@ class ODEEulerFlowMatchingSolver(Solver):
         cond_mask=None,
         do_regular_cfg=False,
         _null_context=None,
+        use_PixArt=False,
         **kwargs,
     ):
         """
@@ -627,6 +644,7 @@ class ODEEulerFlowMatchingSolver(Solver):
                 cond_mask=cond_mask,
                 do_regular_cfg=do_regular_cfg,
                 _null_context=_null_context,
+                use_PixArt=use_PixArt,
             )
             if self.step_size_type == "step_in_dsigma":
                 step_size = sigma_steps[i + 1] - sigma_steps[i]

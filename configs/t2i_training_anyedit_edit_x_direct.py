@@ -89,7 +89,7 @@ model = Args(
     direct_map=True,
     use_cross_attn=True, # False, # 
     do_regular_cfg=True, # False, # 
-    prompt_dropout_prob=0.1, # 0.0, # 
+    prompt_dropout_prob=0.0, # 0.1, # 
 )
 
 def d(**kwargs):
@@ -110,24 +110,24 @@ def get_config():
 
     config.train = d(
         n_steps=1000000,                                        # total training iterations
-        batch_size=16,                                           # overall batch size across ALL gpus, where batch_size_per_gpu == batch_size / number_of_gpus
+        batch_size=256, # 32, # 16, #                                # overall batch size across ALL gpus, where batch_size_per_gpu == batch_size / number_of_gpus
         mode='cond',
-        log_interval=10,
+        log_interval=10, # 1, # 
         eval_interval=100,                                       # iteration interval for visual testing on the specified prompt
-        save_interval=5000,                                      # iteration interval for saving checkpoints and testing FID
+        save_interval=1000, # 5000, #                                     # iteration interval for saving checkpoints and testing FID
         n_samples_eval=8,                                       # number of samples duing visual testing. This depends on your GPU memory and can be any integer between 1 and 15 (as we provide only 15 prompts).
     )
 
     config.optimizer = d(
         name='adamw',
-        lr=0.00001,                                             # learning rate
-        weight_decay=0.03,
+        lr=0.000001, # 0.00001, # 0.0001, #                                      # learning rate
+        weight_decay=0, # 0.03, # 
         betas=(0.9, 0.9),
     )
 
     config.lr_scheduler = d(
         name='customized',
-        warmup_steps=5000                                       # warmup steps
+        warmup_steps=5000, # 1000, #                                 # warmup steps
     )
 
     global model
@@ -140,12 +140,13 @@ def get_config():
     config.dataset = d(
         name='ImageDataset',                               # dataset name
         resolution=512,                                         # dataset resolution
-        llm='t5', # 'clip', #                                            # language model to generate language embedding
-        train_path='anyedit_1k', #  'anyedit', # 'anyedit_all', #     # training set path
-        val_path='anyedit_1k', # 'anyedit_val', #                     # val set path
+        llm='t5', # 'clip', #          # language model to generate language embedding
+        train_path='anyedit_all', # 'anyedit', # 'anyedit_100k', # 'anyedit_1k', # 
+        val_path='anyedit_all', # 'anyedit', # 'anyedit_100k', # 'anyedit_1k', # 'anyedit_val', # 
         cfg=False,
         edit_mode=True,
         prompt_mode='dual', # 'instruction', # 'output', #               # ['output', 'dual', 'instruction']
+        naive_mode=None,
     )
 
     config.sample = d(
@@ -153,15 +154,15 @@ def get_config():
         n_samples=30000,                                        # number of samples for testing (during training, we sample 10K images, which is hardcoded in the training script)
         mini_batch_size=10,                                     # batch size for testing (i.e., the number of images generated per GPU)
         cfg=False,
-        scale=7,                                                # cfg scale
+        scale=1, # 7, #                                               # cfg scale
         path=''
     )
 
-    config.load_from = 'pretrained_models/t2i_512px_t5_dit.pth' # 'pretrained_models/t2i_512px_clip_dimr.pth' # 
+    config.load_from = 'pretrained_models/t2i_512px_t5_dit.pth' # '' # 'pretrained_models/t2i_512px_clip_dimr.pth' # 
 
     config.edit_mode = True
 
-    config.workdir = 't2i_anyedit_edit_direct_x_direct_xattn_cfg_overfit_dualp' # 't2i_anyedit_edit_direct_x_direct_xattn_cfg_overfit_instp' # 't2i_anyedit_edit_direct_x_direct_xattn_cfg_overfit' # 't2i_anyedit_edit_direct_x_direct_xattn_cfg' # 't2i_training_anyedit_edit_direct_x_direct_xattn' # 't2i_training_anyedit_edit_x_direct' # 
+    config.workdir = 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSslr_gatex' # 't2i_training_anyedit_edit_direct_xattn_full_instp_BSslr_gatex' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSlr' # 't2i_training_anyedit_edit_direct_xattn_full_fp32_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSLR_noload' # 't2i_training_anyedit_edit_direct_xattn_full_fp32_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR_dirmag' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR_reweight' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR_huber' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSlr' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_bsLR' # 't2i_training_anyedit_edit_direct_xattn_all_dualp_bslr' #  't2i_training_anyedit_edit_direct_xattn_dualp_bslr' # 't2i_training_anyedit_edit_direct_xattn_dualp_bsLR' # 't2i_training_anyedit_edit_direct_xattn_dualp_BSlr' # 't2i_training_anyedit_edit_direct_xattn_dualp_BSLR' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_dualp' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_instp' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_overfit_dualp' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_overfit' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_overfit_instp' # 't2i_training_anyedit_edit_direct_x_direct_xattn' # 't2i_training_anyedit_edit_x_direct' # 
 
     return config
 

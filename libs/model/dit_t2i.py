@@ -88,7 +88,7 @@ class DiTBlock(nn.Module):
     """
     A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_cross_attn=False, **block_kwargs):
+    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, use_cross_attn=False, disable_cross_attn=False, **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, **block_kwargs)
@@ -98,7 +98,8 @@ class DiTBlock(nn.Module):
         self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0)
 
         self.use_cross_attn = use_cross_attn
-        if self.use_cross_attn:
+        self.disable_cross_attn = disable_cross_attn
+        if self.use_cross_attn and not self.disable_cross_attn:
             self.cross_attn = nn.MultiheadAttention(
                 embed_dim=hidden_size,
                 num_heads=num_heads,
@@ -111,8 +112,8 @@ class DiTBlock(nn.Module):
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(hidden_size, hidden_size * 6, bias=True),
-            # nn.Linear(hidden_size, hidden_size * (9 if self.use_cross_attn else 6), bias=True),
+            # nn.Linear(hidden_size, hidden_size * 6, bias=True),
+            nn.Linear(hidden_size, hidden_size * (9 if self.use_cross_attn else 6), bias=True),
         )
 
     def forward(self, x, c, cond_x=None, cond_mask=None):
@@ -121,20 +122,20 @@ class DiTBlock(nn.Module):
 
     def _forward(self, x, c, cond_x=None, cond_mask=None):
         # st() 
-        # if self.use_cross_attn:
-        #     shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp, shift_ca, scale_ca, gate_ca = self.adaLN_modulation(c).chunk(9, dim=-1)
-        # else:
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1) # Note -1 
+        if self.use_cross_attn:
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp, shift_ca, scale_ca, gate_ca = self.adaLN_modulation(c).chunk(9, dim=-1)
+        else:
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1) # Note -1 
         if gate_msa.ndim < 3:
             gate_msa = gate_msa.unsqueeze(1)
             gate_mlp = gate_mlp.unsqueeze(1)
-            # if self.use_cross_attn:
-            #     gate_ca = gate_ca.unsqueeze(1)
+            if self.use_cross_attn:
+                gate_ca = gate_ca.unsqueeze(1)
 
         x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        if self.use_cross_attn:
-            # x = x + gate_ca * self.cross_attn(modulate(self.norm_ca(x), shift_ca, scale_ca), cond_x, cond_x)[0] 
-            x = x + self.cross_attn(self.norm_ca(x), cond_x, cond_x, key_padding_mask=cond_mask)[0] 
+        if self.use_cross_attn and not self.disable_cross_attn :
+            x = x + gate_ca * self.cross_attn(modulate(self.norm_ca(x), shift_ca, scale_ca), cond_x, cond_x)[0] 
+            # x = x + self.cross_attn(self.norm_ca(x), cond_x, cond_x, key_padding_mask=cond_mask)[0] 
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 
@@ -190,6 +191,7 @@ class DiT(nn.Module):
         self.direct_map = config.direct_map if hasattr(config, "direct_map") else False
         self.use_cross_attn = config.use_cross_attn if hasattr(config, "use_cross_attn") else False
         self.do_regular_cfg = config.do_regular_cfg if hasattr(config, "do_regular_cfg") else False 
+        self.disable_cross_attn = config.disable_cross_attn if hasattr(config, "disable_cross_attn") else False
 
         self.x_embedder = PatchEmbed(self.input_size, patch_size, self.in_channels, hidden_size, bias=True)
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -200,7 +202,7 @@ class DiT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_cross_attn=self.use_cross_attn) for _ in range(depth)
+            DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_cross_attn=self.use_cross_attn, disable_cross_attn=self.disable_cross_attn) for _ in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.initialize_weights()

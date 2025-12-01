@@ -21,6 +21,8 @@ import cv2
 import libs.clip
 import bisect
 
+from ipdb import set_trace as st
+
 
 class UnlabeledDataset(Dataset):
     def __init__(self, dataset):
@@ -218,7 +220,7 @@ def get_feature_dir_info(root):
 
 
 class ImageDataset(Dataset):
-    def __init__(self, root, resolution, llm, edit_mode=False, prompt_mode='output'):
+    def __init__(self, root, resolution, llm, edit_mode=False, prompt_mode='output', naive_mode=None):
         super().__init__()
         json_path = os.path.join(root,'img_text_pair.jsonl')
         self.img_root = os.path.join(root,'imgs')
@@ -231,6 +233,8 @@ class ImageDataset(Dataset):
         self.edit_mode = edit_mode
         self.prompt_mode = prompt_mode
         assert self.prompt_mode in ['output', 'dual', 'instruction']
+        self.naive_mode = naive_mode
+        assert self.naive_mode in [None, 'zoom_in', 'zoom_in_out', 'rotate', 'hole', 'hole_latent', 'margin', 'hole_margin', ]
 
     def __len__(self):
         return len(self.file_list)
@@ -239,18 +243,82 @@ class ImageDataset(Dataset):
         data_item = self.file_list[idx]
 
         img_path = os.path.join(self.img_root, data_item['img'])
-        img = self.load_process_image(img_path)
+        img, pil_img = self.load_process_image(img_path)
 
         if self.edit_mode:
             src_img_path = os.path.join(self.img_root, data_item['img_src'])
-            img_src = self.load_process_image(src_img_path)
+            img_src, pil_img_src = self.load_process_image(src_img_path)
 
         if self.prompt_mode == 'output':
             prompt = data_item['prompt']
         elif self.prompt_mode == 'dual':
             prompt = [data_item['prompt'], data_item['prompt_src']]
+
+            # if prompt[1] == '':
+            #     prompt[1] = 'A photo'
+            #     prompt[0] = 'A photo that ' + prompt[0]
+            #     # Just for numerical stablity, but still not sure if really here problem.
+            #     # And still not good data for many src prompt, better to use instrcution
+            #     # And even better to directly use gpt-image dataset etc. and so on ........ (any more extended data quality) 
+
         elif self.prompt_mode == 'instruction':
             prompt = data_item['prompt_inst']
+
+        # or do src to aug (at p)
+        # also for natural logic
+        if self.naive_mode == 'zoom_in':
+            img_zoom = self.zoom_in_img(pil_img)
+            img, img_src = img_zoom, img
+            prompt = 'zoom in'
+
+        elif self.naive_mode == 'zoom_in_out':
+            img_zoom = self.zoom_in_img(pil_img)
+            p = random.random()
+            if p < 0.5:
+                img, img_src = img_zoom, img
+                prompt = 'zoom in'
+            else:
+                img_src = img_zoom
+                prompt = 'zoom out'
+            # diff = np.abs(img - img_src).max()
+            # if diff < 1e-2:
+            #     print(f"[DEBUG] idx={idx}, path={img_path}, prompt={prompt}, max_diff={diff}")
+
+        elif self.naive_mode == 'rotate':
+            p = random.random()
+            if p < 0.5:
+                img_rot = self.rotate_img(pil_img, 'left')
+                img, img_src = img_rot, img
+                prompt = 'rotate left'
+            else:
+                img_rot = self.rotate_img(pil_img, 'right')
+                img, img_src = img_rot, img
+                prompt = 'rotate right'
+
+        elif self.naive_mode == 'hole':
+            img_hole = self.hole_margin_img(img, mode='hole')
+            img, img_src = img_hole, img
+            prompt = 'an image with a hole in the center'
+
+        elif self.naive_mode == 'hole_latent':
+            # st()
+            img_src = img
+
+        elif self.naive_mode == 'margin':
+            img_mar = self.hole_margin_img(img, mode='margin')
+            img, img_src = img_mar, img
+            prompt = 'an image with margins missing'
+
+        elif self.naive_mode == 'hole_margin':
+            p = random.random()
+            if p < 0.5:
+                img_hole = self.hole_margin_img(img, mode='hole')
+                img, img_src = img_hole, img
+                prompt = 'an image with a hole in the center'
+            else:
+                img_mar = self.hole_margin_img(img, mode='margin')
+                img, img_src = img_mar, img
+                prompt = 'an image with margins missing'
 
         if self.edit_mode:
             return img, prompt, img_src
@@ -261,27 +329,71 @@ class ImageDataset(Dataset):
         pil_image = Image.open(img_path)
         pil_image.load()
         pil_image = pil_image.convert("RGB")
-        img = pil_image.resize((self.resolution, self.resolution), resample=Image.LANCZOS)
-        img = np.array(img).astype(np.float32)
+        pil_image = pil_image.resize((self.resolution, self.resolution), resample=Image.LANCZOS)
+        img = np.array(pil_image).astype(np.float32)
+        img = img / 127.5 - 1.0
+        img = einops.rearrange(img, 'h w c -> c h w')
+        return img, pil_image
+
+    def zoom_in_img(self, pil_img):
+        # h, w = pil_img.size
+        # assert h == self.resolution and w == self.resolution
+        left = self.resolution // 4
+        top = self.resolution // 4
+        right = self.resolution * 3 // 4
+        bottom = self.resolution * 3 // 4
+        pil_img = pil_img.crop((left, top, right, bottom))
+        pil_img = pil_img.resize((self.resolution, self.resolution), resample=Image.LANCZOS)
+        img = np.array(pil_img).astype(np.float32)
         img = img / 127.5 - 1.0
         img = einops.rearrange(img, 'h w c -> c h w')
         return img
 
+    def rotate_img(self, pil_img, direction):
+        if direction == 'left':
+            pil_img = pil_img.transpose(Image.Transpose.ROTATE_90)
+        elif direction == 'right':
+            pil_img = pil_img.transpose(Image.Transpose.ROTATE_270)
+        else:
+            raise ValueError("Direction must be 'left' or 'right'.")
+        img = np.array(pil_img).astype(np.float32)
+        img = img / 127.5 - 1.0
+        img = einops.rearrange(img, 'h w c -> c h w')
+        return img
+
+    def hole_margin_img(self, img, mode):
+        assert mode in ['hole', 'margin']
+        if mode == 'hole':
+            img_hole = img.copy()
+            start_idx = self.resolution // 4
+            end_idx = self.resolution * 3 // 4
+            img_hole[:, start_idx:end_idx, start_idx:end_idx] = -1.0 # enc z -3 +3 but here not latent just tensor! so still rgb and -1 +1 for sure! # 
+            return img_hole
+        elif mode == 'margin':
+            img_mar = img.copy()
+            start_idx = self.resolution // 4
+            end_idx = self.resolution * 3 // 4
+            img_mar[:, :start_idx, :] = -1.0
+            img_mar[:, end_idx:, :] = -1.0
+            img_mar[:, :, :start_idx] = -1.0
+            img_mar[:, :, end_idx:] = -1.0
+            return img_mar
+
 
 class ImageFullDataset(DatasetFactory):  # the moments calculated by Stable Diffusion image encoder & the contexts calculated by clip
-    def __init__(self, train_path, val_path, resolution, llm, cfg=False, p_uncond=None, fix_test_order=False, edit_mode=False, prompt_mode='output'):
+    def __init__(self, train_path, val_path, resolution, llm, cfg=False, p_uncond=None, fix_test_order=False, edit_mode=False, prompt_mode='output', naive_mode=None):
         super().__init__()
         print('Prepare dataset...')
         self.resolution = resolution
 
-        self.train = ImageDataset(train_path, resolution=resolution, llm=llm, edit_mode=edit_mode, prompt_mode=prompt_mode)
-        self.test = ImageDataset(val_path, resolution=resolution, llm=llm, edit_mode=edit_mode, prompt_mode=prompt_mode)
+        self.train = ImageDataset(train_path, resolution=resolution, llm=llm, edit_mode=edit_mode, prompt_mode=prompt_mode, naive_mode=naive_mode)
+        self.test = ImageDataset(val_path, resolution=resolution, llm=llm, edit_mode=edit_mode, prompt_mode=prompt_mode, naive_mode=naive_mode)
         
         print('Prepare dataset ok')
 
         # self.empty_context = np.load(os.path.join(val_path, 'empty_context.npy'), allow_pickle=True).item()
 
-        assert not cfg
+        # assert not cfg
 
         # text embedding extracted by clip
         # self.prompts, self.token_embedding, self.token_mask, self.token = [], [], [], []
