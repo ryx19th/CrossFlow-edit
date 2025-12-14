@@ -12,6 +12,7 @@ from absl import logging
 from PIL import Image, ImageDraw, ImageFont
 import textwrap
 import copy
+import torch.nn.functional as F
 
 from ipdb import set_trace as st
 
@@ -116,6 +117,17 @@ def ema(model_dest: nn.Module, model_src: nn.Module, rate):
         p_dest.data.mul_(rate).add_((1 - rate) * p_src.data)
 
 
+def resize_pos_embed(pos, new_shape):
+    # pos: [1, N, C]
+    old_grid = int(np.sqrt(pos.shape[1]))
+    new_grid = int(np.sqrt(new_shape[1]))
+    C = pos.shape[-1]
+    pos = pos.reshape(1, old_grid, old_grid, C).permute(0, 3, 1, 2)  # [1,C,H,W]
+    pos = F.interpolate(pos, size=(new_grid, new_grid), mode="bicubic", align_corners=False)
+    pos = pos.permute(0, 2, 3, 1).reshape(1, new_grid*new_grid, C)
+    return pos
+
+
 class TrainState(object):
     def __init__(self, optimizer, lr_scheduler, step, nnet=None, nnet_ema=None):
         self.optimizer = optimizer
@@ -152,7 +164,7 @@ class TrainState(object):
                 full_weight = torch.cat([old_weight, old_weight], dim=1) # should be ok as the input x and cond_x are very similar images after all
                 state_dict["x_embedder.proj.weight"] = full_weight
 
-            elif self.nnet.cond_mode == 'cross-attn' and self.nnet.use_cross_attn:
+            elif self.nnet.cond_mode == 'cross-attn' and self.nnet.use_cross_attn and not self.nnet.disable_cross_attn:
                 # st()
                 # Expand adaLN_modulation output channels
                 for key in state_dict.keys():
@@ -165,6 +177,14 @@ class TrainState(object):
                             full_weight[:old_weight.shape[0]] = old_weight
                             full_weight[old_weight.shape[0]:] = new_weight[old_weight.shape[0]:]
                             state_dict[key] = full_weight
+
+        if self.nnet.input_size == 32:
+            # st()
+            old_weight = state_dict["pos_embed"]
+            new_weight = self.nnet.pos_embed
+            assert old_weight.shape[1] == new_weight.shape[1] * 4, f"Shape mismatch for pos_embed: state_dict has {old_weight.shape} vs model has {new_weight.shape}"
+            downsampled_weight = resize_pos_embed(old_weight, new_weight.shape)
+            state_dict["pos_embed"] = downsampled_weight
 
         self.nnet.load_state_dict(state_dict, strict=False )
         self.nnet_ema.load_state_dict(state_dict, strict=False )

@@ -196,6 +196,7 @@ class Solver:
         do_regular_cfg=False,
         _null_context=None,
         use_PixArt=False,
+        do_class_cond=False,
     ):
 
         log_snr = 4 - t_continuous * 8 # inversed
@@ -209,20 +210,26 @@ class Solver:
 
         elif do_regular_cfg:
             # st()
-            bs = x.shape[0]
-            x = torch.cat([x, x], dim=0)
-            t_continuous = torch.cat([t_continuous, t_continuous], dim=0)
-            log_snr = torch.cat([log_snr, log_snr], dim=0)
-            if use_PixArt:
-                _null_cond = _null_context["cond"].repeat(bs, 1, 1, 1)
-                _null_con_mask = _null_context["con_mask"].repeat(bs, 1, 1, 1)
+            if unconditional_guidance_scale > 0.0:
+                bs = x.shape[0]
+                x = torch.cat([x, x], dim=0)
+                t_continuous = torch.cat([t_continuous, t_continuous], dim=0)
+                log_snr = torch.cat([log_snr, log_snr], dim=0)
+                # if do_class_cond : # currently just no cfg for class cond
+                if use_PixArt:
+                    _null_cond = _null_context["cond"].repeat(bs, 1, 1, 1)
+                    _null_con_mask = _null_context["con_mask"].repeat(bs, 1, 1, 1)
+                else:
+                    _null_cond = _null_context["cond"].repeat(bs, 1, 1)
+                    _null_con_mask = _null_context["con_mask"].repeat(bs, 1)
+                cond_image = torch.cat([cond_image, _null_cond], dim=0)
+                cond_mask = torch.cat([cond_mask, _null_con_mask], dim=0)
+                _res = self.model(x, t=t_continuous, log_snr=log_snr, cond_image=cond_image, cond_mask=cond_mask, cfg_scale=unconditional_guidance_scale)
+                sample, _ = _res.chunk(2, dim=0)
+
             else:
-                _null_cond = _null_context["cond"].repeat(bs, 1, 1)
-                _null_con_mask = _null_context["con_mask"].repeat(bs, 1)
-            cond_image = torch.cat([cond_image, _null_cond], dim=0)
-            cond_mask = torch.cat([cond_mask, _null_con_mask], dim=0)
-            _res = self.model(x, t=t_continuous, log_snr=log_snr, cond_image=cond_image, cond_mask=cond_mask, cfg_scale=unconditional_guidance_scale)
-            sample, _ = _res.chunk(2, dim=0)
+                sample = self.model(x, t=t_continuous, log_snr=log_snr, cond_image=cond_image, cond_mask=cond_mask)[0]
+
             return sample
 
         else:

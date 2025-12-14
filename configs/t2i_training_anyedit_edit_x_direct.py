@@ -74,22 +74,25 @@ model = Args(
     norm_type = "TDRMSN",
     use_t2i = True,
     clip_dim=4096,
-    num_clip_token=77,
+    # num_clip_token=77,
     gradient_checking=True, # for larger model
     # cfg_indicator=0.10,
-    textVAE = Args(
-        num_blocks = 11,
-        hidden_dim = 1024,
-        hidden_token_length = 256,
-        num_attention_heads = 8,
-        dropout_prob = 0.1,
-    ),
+    # textVAE = Args(
+    #     num_blocks = 11,
+    #     hidden_dim = 1024,
+    #     hidden_token_length = 256,
+    #     num_attention_heads = 8,
+    #     dropout_prob = 0.1,
+    # ),
     edit_mode=True,
     cond_mode='cross-attn', # 'channel', # 'self-attn', #              # ['channel', 'cross-attn', 'self-attn'] 
     direct_map=True,
     use_cross_attn=True, # False, # 
     do_regular_cfg=True, # False, # 
     prompt_dropout_prob=0.0, # 0.1, # 
+    disable_cross_attn=False, # True, # 
+    do_class_cond=False, # True, # 
+    num_classes=2, # 
 )
 
 def d(**kwargs):
@@ -140,12 +143,12 @@ def get_config():
     config.dataset = d(
         name='ImageDataset',                               # dataset name
         resolution=512,                                         # dataset resolution
-        llm='t5', # 'clip', #          # language model to generate language embedding
+        # llm='t5', # 'clip', #          # language model to generate language embedding
         train_path='anyedit_all', # 'anyedit', # 'anyedit_100k', # 'anyedit_1k', # 
         val_path='anyedit_all', # 'anyedit', # 'anyedit_100k', # 'anyedit_1k', # 'anyedit_val', # 
         cfg=False,
         edit_mode=True,
-        prompt_mode='dual', # 'instruction', # 'output', #               # ['output', 'dual', 'instruction']
+        prompt_mode='instruction', # 'dual', # 'output', #               # ['output', 'dual', 'instruction']
         naive_mode=None,
     )
 
@@ -154,7 +157,7 @@ def get_config():
         n_samples=30000,                                        # number of samples for testing (during training, we sample 10K images, which is hardcoded in the training script)
         mini_batch_size=10,                                     # batch size for testing (i.e., the number of images generated per GPU)
         cfg=False,
-        scale=1, # 7, #                                               # cfg scale
+        scale=0.0, # 1.0, # 7.0, #                                               # cfg scale
         path=''
     )
 
@@ -162,7 +165,10 @@ def get_config():
 
     config.edit_mode = True
 
-    config.workdir = 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSslr_gatex' # 't2i_training_anyedit_edit_direct_xattn_full_instp_BSslr_gatex' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSlr' # 't2i_training_anyedit_edit_direct_xattn_full_fp32_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSLR_noload' # 't2i_training_anyedit_edit_direct_xattn_full_fp32_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR_dirmag' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR_reweight' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR_huber' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSlr' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_bsLR' # 't2i_training_anyedit_edit_direct_xattn_all_dualp_bslr' #  't2i_training_anyedit_edit_direct_xattn_dualp_bslr' # 't2i_training_anyedit_edit_direct_xattn_dualp_bsLR' # 't2i_training_anyedit_edit_direct_xattn_dualp_BSlr' # 't2i_training_anyedit_edit_direct_xattn_dualp_BSLR' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_dualp' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_instp' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_overfit_dualp' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_overfit' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_overfit_instp' # 't2i_training_anyedit_edit_direct_x_direct_xattn' # 't2i_training_anyedit_edit_x_direct' # 
+    config.clip_grad_norm = 1.0 # 0.1 # 0.0 # 
+    # bug 2 vs . 
+
+    config.workdir = 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSslr_gatex_clipnorm' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSlr_gatex_clipnorm' # 't2i_training_anyedit_edit_direct_xattn_full_tf32_instp_BSLR_gatex_clipnorm' # 't2i_training_anyedit_edit_direct_xattn_full_tf32_dualp_BSLR_gatex_clipnorm' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSLR_gatex_clipnorm0.1' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSLR_gatex_clipnorm_reweight' # 't2i_training_anyedit_edit_direct_xattn_full_instp_BSLR_gatex_clipnorm0.1' # 't2i_training_anyedit_edit_direct_xattn_full_instp_BSLR_gatex_clipnorm' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSLR_gatex_clipnorm' # 't2i_training_anyedit_edit_direct_xattn_full_fp32_instp_BSLR_gatex' # 't2i_training_anyedit_edit_direct_xattn_full_fp32_dualp_BSLR_gatex' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSslr_gatex' # 't2i_training_anyedit_edit_direct_xattn_full_instp_BSslr_gatex' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSlr' # 't2i_training_anyedit_edit_direct_xattn_full_fp32_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSLR_noload' # 't2i_training_anyedit_edit_direct_xattn_full_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR_dirmag' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR_reweight' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR_huber' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSLR' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_BSlr' # 't2i_training_anyedit_edit_direct_xattn_fp32_dualp_bsLR' # 't2i_training_anyedit_edit_direct_xattn_all_dualp_bslr' #  't2i_training_anyedit_edit_direct_xattn_dualp_bslr' # 't2i_training_anyedit_edit_direct_xattn_dualp_bsLR' # 't2i_training_anyedit_edit_direct_xattn_dualp_BSlr' # 't2i_training_anyedit_edit_direct_xattn_dualp_BSLR' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_dualp' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_instp' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_overfit_dualp' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_overfit' # 't2i_training_anyedit_edit_direct_x_direct_xattn_cfg_overfit_instp' # 't2i_training_anyedit_edit_direct_x_direct_xattn' # 't2i_training_anyedit_edit_x_direct' # 
 
     return config
 

@@ -270,7 +270,7 @@ class UniformTimeSampler(TimeStepSampler):
 class FlowMatching(nn.Module):  
     def __init__(
         self,
-        sigma_min: float = 1e-5,
+        sigma_min: float = 1e-5, ##  
         sigma_max: float = 1.0,
         timescale: float = 1.0,
         **kwargs,
@@ -378,6 +378,8 @@ class FlowMatching(nn.Module):
         cond_image=None,
         use_textVE=True,
         _null_context=None,
+        use_PixArt=False,
+        do_class_cond=False,
     ):
         """
         CrossFlow training for DiMR
@@ -466,6 +468,7 @@ class FlowMatching(nn.Module):
         use_textVE=True,
         _null_context=None,
         use_PixArt=False,
+        do_class_cond=False,
     ):
         """
         CrossFLow training for DiT
@@ -524,10 +527,11 @@ class FlowMatching(nn.Module):
                 assert not hasattr(all_config.nnet.model_args, "cfg_indicator") or all_config.nnet.model_args.cfg_indicator == 0, "only one of cfg_indicator and do_regular_cfg can be set"
                 assert not use_textVE and nnet.module.edit_mode and nnet.module.direct_map, "only for direct edit mode where text goes into side cross attentions"
                 # now noise has been src image latents, cond_image has been prompt text tokens
-                drop_mask = torch.rand(x_start.shape[0], device=x_start.device) < prompt_dropout_prob
-                cond_image[drop_mask] = _null_context['cond'].to(x_start.device)[0]
-                con_mask[drop_mask] = _null_context['con_mask'].to(x_start.device)[0]
-                # text_token[drop_mask] = _null_context['text_token'].to(x_start.device)[0]
+                if not do_class_cond : # can also do cfg but not do for now
+                    drop_mask = torch.rand(x_start.shape[0], device=x_start.device) < prompt_dropout_prob
+                    cond_image[drop_mask] = _null_context['cond'].to(x_start.device)[0]
+                    con_mask[drop_mask] = _null_context['con_mask'].to(x_start.device)[0]
+                    # text_token[drop_mask] = _null_context['text_token'].to(x_start.device)[0]
 
         x_noisy = self.psi(t, x=noise, x1=x_start)
         target_velocity = self.Dt_psi(t, x=noise, x1=x_start)
@@ -539,7 +543,7 @@ class FlowMatching(nn.Module):
 
         # loss_diff = F.smooth_l1_loss(prediction, target_velocity, reduction='none', beta=0.5).mean(dim=(1,2,3))
 
-        # # per-sample 权重，压尾部同时提升大改动样本的相对贡献
+        # per-sample 权重，压尾部同时提升大改动样本的相对贡献
         # w_s = (target_velocity.flatten(1).norm(dim=1) + 1e-6).pow(-0.5)   # 或 -1.0
         # # per-pixel 权重，聚焦编辑区域（用Δ的幅值或其平滑版）
         # w_p = (target_velocity.abs().mean(dim=1, keepdim=True))           # [B,1,H,W]；可再做高斯平滑/阈值-TopK
@@ -610,6 +614,7 @@ class ODEEulerFlowMatchingSolver(Solver):
         do_regular_cfg=False,
         _null_context=None,
         use_PixArt=False,
+        do_class_cond=False,
         **kwargs,
     ):
         """
@@ -645,6 +650,7 @@ class ODEEulerFlowMatchingSolver(Solver):
                 do_regular_cfg=do_regular_cfg,
                 _null_context=_null_context,
                 use_PixArt=use_PixArt,
+                do_class_cond=do_class_cond,
             )
             if self.step_size_type == "step_in_dsigma":
                 step_size = sigma_steps[i + 1] - sigma_steps[i]

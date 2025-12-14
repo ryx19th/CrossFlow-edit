@@ -30,7 +30,8 @@ class PixArtBlock(nn.Module):
     """
 
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, drop_path=0, input_size=None,
-                 sampling=None, sr_ratio=1, qk_norm=False, **block_kwargs):
+                 sampling=None, sr_ratio=1, qk_norm=False,
+                 gated_cross_attn=False, **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.attn = AttentionKVCompress(
@@ -43,16 +44,40 @@ class PixArtBlock(nn.Module):
         approx_gelu = lambda: nn.GELU(approximate="tanh")
         self.mlp = Mlp(in_features=hidden_size, hidden_features=int(hidden_size * mlp_ratio), act_layer=approx_gelu, drop=0)
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.scale_shift_table = nn.Parameter(torch.randn(6, hidden_size) / hidden_size ** 0.5)
+
+        self.gated_cross_attn = gated_cross_attn
+        if self.gated_cross_attn:
+            self.norm_ca = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+
+        # Note: just static variables, not layers that multiplied with timestep ? Just added then / 
+        # And not really init to 0? Below only init attn weights, not the gate even for self attns????? ---- And here is the init: Just randn! 
+        # TODO So should be adjusted as 0or1gate, 0shift and 1scale? 
+        if self.gated_cross_attn:
+            # st()
+            scale_shift_table = torch.randn(9, hidden_size)
+            scale_shift_table[6].fill_(0)  # shift_ca
+            scale_shift_table[7].fill_(1)   # scale_ca
+            scale_shift_table[8].fill_(1)  # gate_ca # 1or0
+        else:
+            scale_shift_table = torch.randn(6, hidden_size)
+        self.scale_shift_table = nn.Parameter(scale_shift_table / hidden_size ** 0.5)
         self.sampling = sampling
         self.sr_ratio = sr_ratio
 
     def forward(self, x, y, t, mask=None, **kwargs):
         B, N, C = x.shape
 
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (self.scale_shift_table[None] + t.reshape(B, 6, -1)).chunk(6, dim=1)
+        if self.gated_cross_attn:
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp, shift_ca, scale_ca, gate_ca = (self.scale_shift_table[None] + t.reshape(B, 9, -1)).chunk(9, dim=1)
+        else:
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (self.scale_shift_table[None] + t.reshape(B, 6, -1)).chunk(6, dim=1)
+
         x = x + self.drop_path(gate_msa * self.attn(t2i_modulate(self.norm1(x), shift_msa, scale_msa)).reshape(B, N, C))
-        x = x + self.cross_attn(x, y, mask)
+        if self.gated_cross_attn:
+            # st()
+            x = x + gate_ca * self.cross_attn(t2i_modulate(self.norm_ca(x), shift_ca, scale_ca), y, mask) # .reshape(B, N, C) 
+        else:
+            x = x + self.cross_attn(x, y, mask)
         x = x + self.drop_path(gate_mlp * self.mlp(t2i_modulate(self.norm2(x), shift_mlp, scale_mlp)))
 
         return x
@@ -85,8 +110,9 @@ class PixArt(nn.Module):
             model_max_length=120,
             qk_norm=False,
             kv_compress_config=None,
-            edit_mode=False, # 
-            cond_mode='channel', # 
+            edit_mode=False, #
+            cond_mode='channel', #
+            gated_cross_attn=False, #
             **kwargs,
     ):
         super().__init__()
@@ -97,10 +123,12 @@ class PixArt(nn.Module):
         self.pe_interpolation = pe_interpolation
         self.depth = depth
 
-        self.edit_mode = edit_mode # 
-        self.cond_mode = cond_mode # 
+        self.edit_mode = edit_mode #
+        self.cond_mode = cond_mode #
         assert self.cond_mode in ['channel', 'cross-attn', 'self-attn'] 
         # self.in_channels = in_channels * (2 if self.edit_mode and self.cond_mode == 'channel' else 1)
+
+        self.gated_cross_attn = gated_cross_attn
 
         self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True) # 
         self.t_embedder = TimestepEmbedder(hidden_size)
@@ -112,7 +140,7 @@ class PixArt(nn.Module):
         approx_gelu = lambda: nn.GELU(approximate="tanh")
         self.t_block = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+            nn.Linear(hidden_size, hidden_size * (9 if self.gated_cross_attn else 6), bias=True)
         )
         self.y_embedder = CaptionEmbedder(
             in_channels=caption_channels, hidden_size=hidden_size, uncond_prob=class_dropout_prob,
@@ -134,6 +162,7 @@ class PixArt(nn.Module):
                     self.kv_compress_config['scale_factor']
                 ) if i in self.kv_compress_config['kv_compress_layer'] else 1,
                 qk_norm=qk_norm,
+                gated_cross_attn=self.gated_cross_attn
             )
             for i in range(depth)
         ])

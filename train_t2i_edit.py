@@ -72,6 +72,20 @@ from pixart_diffusion.utils.misc import read_config
 # PixArt imports end
 
 
+def enable_tf32():
+    # # PyTorch 2.9+ 
+    # if hasattr(torch.backends.cuda.matmul, "fp32_precision"):
+    #     torch.backends.cuda.matmul.fp32_precision = "tf32"
+    #     torch.backends.cudnn.conv.fp32_precision = "tf32"
+    # else:
+    # PyTorch <=2.8 
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision("high")
+
+# enable_tf32()
+
+
 def train(config):
     if config.get('benchmark', False):
         torch.backends.cudnn.benchmark = True
@@ -122,6 +136,7 @@ def train(config):
     nnet = None
     # st()
     if config.get('base_net', None) == 'pixart':
+        print('Use PixArt base net and loading its config...')
         pixart_config = read_config('pixart_configs/pixart_sigma_config/PixArt_sigma_xl2_img256_internal_anyedit_edit.py')
         image_size = pixart_config.image_size  # @param [256, 512]
         latent_size = int(image_size) // 8
@@ -198,16 +213,19 @@ def train(config):
 
     if config.get('base_net', None) is None:
         t5 = clip = None
-        if config.nnet.model_args.clip_dim == 4096:
-            llm = "t5"
-            t5 = T5Embedder(device=device)
-        elif config.nnet.model_args.clip_dim == 768:
-            llm = "clip"
-            clip = FrozenCLIPEmbedder()
-            clip.eval()
-            clip.to(device)
+        if config.nnet.model_args.do_class_cond:
+            llm = None
         else:
-            raise NotImplementedError
+            if config.nnet.model_args.clip_dim == 4096: # this way # 
+                llm = "t5"
+                t5 = T5Embedder(device=device)
+            elif config.nnet.model_args.clip_dim == 768:
+                llm = "clip"
+                clip = FrozenCLIPEmbedder()
+                clip.eval()
+                clip.to(device)
+            else:
+                raise NotImplementedError
     else:
         llm = t5 = clip = None
 
@@ -389,16 +407,20 @@ def train(config):
                     _z_hole[:, :, start_idx:end_idx, start_idx:end_idx] = -1 # not sure how to make full black hole on latent 
                     _z = _z_hole
 
-            if llm == 't5':
-                llm_fn = encode_text_t5
-            elif llm == 'clip':
-                llm_fn = encode_text_clip
-            _batch_con, _batch_mask, _batch_token, _null_context = encode_all_prompts(_batch_caption, llm_fn, do_regular_cfg)
+            if llm is None:
+                _batch_con = _batch_caption
+                _batch_mask, _batch_token, _null_context = None, None, None
+            else:
+                if llm == 't5':
+                    llm_fn = encode_text_t5
+                elif llm == 'clip':
+                    llm_fn = encode_text_clip
+                _batch_con, _batch_mask, _batch_token, _null_context = encode_all_prompts(_batch_caption, llm_fn, do_regular_cfg)
 
         use_textVE = not (edit_mode and nnet.module.cond_mode == 'cross-attn' and nnet.module.direct_map and nnet.module.use_cross_attn) if config.get('base_net', None) is None else False
 
         loss, loss_dict = _flow_mathcing_model(_z, nnet, loss_coeffs=config.loss_coeffs, cond=_batch_con, con_mask=_batch_mask, batch_img_clip=_batch_img_ori, \
-            nnet_style=config.nnet.name, text_token=_batch_token, model_config=config.nnet.model_args, all_config=config, training_step=train_state.step, cond_image=_z_cond if edit_mode else None, use_textVE=use_textVE, _null_context=_null_context, use_PixArt=config.get('base_net', None) == 'pixart')
+            nnet_style=config.nnet.name, text_token=_batch_token, model_config=config.nnet.model_args, all_config=config, training_step=train_state.step, cond_image=_z_cond if edit_mode else None, use_textVE=use_textVE, _null_context=_null_context, use_PixArt=config.get('base_net', None) == 'pixart', do_class_cond=config.nnet.model_args.do_class_cond, )
 
         ## 
         flag = (~torch.isfinite(loss)).any().to(dtype=torch.int, device=loss.device)
@@ -421,9 +443,14 @@ def train(config):
 
         max_norm = config.get('clip_grad_norm', None)
         # st()
-        if max_norm is not None and max_norm > 0:
-            grad_norm = accelerator.clip_grad_norm_(nnet.parameters(), max_norm)
-            _metrics['grad_norm'] = grad_norm.item()
+        if max_norm is None or max_norm <= 0:
+            max_norm = 1e9 # just for display 
+        _metrics['max_norm'] = max_norm
+        grad_norm = accelerator.clip_grad_norm_(nnet.parameters(), max_norm)
+        _metrics['grad_norm'] = grad_norm.item()
+        # torch.nn.utils.get_total_norm 
+        grad_norm_clipped = accelerator.clip_grad_norm_(nnet.parameters(), max_norm=1e9) # just for display 
+        _metrics['grad_norm_clipped'] = grad_norm_clipped.item()
 
         optimizer.step()
         lr_scheduler.step()
@@ -431,7 +458,7 @@ def train(config):
         train_state.step += 1
         return dict(lr=train_state.optimizer.param_groups[0]['lr'], **_metrics)
 
-    def ode_fm_solver_sample(nnet_ema, _n_samples, _sample_steps, context=None, caption=None, testbatch_img_blurred=None, two_stage_generation=-1, token_mask=None, return_clipScore=False, ClipSocre_model=None, cond_image=None, use_textVE=True, _null_context=None, use_PixArt=False):
+    def ode_fm_solver_sample(nnet_ema, _n_samples, _sample_steps, context=None, caption=None, testbatch_img_blurred=None, two_stage_generation=-1, token_mask=None, return_clipScore=False, ClipSocre_model=None, cond_image=None, use_textVE=True, _null_context=None, use_PixArt=False, do_class_cond=False):
         with torch.no_grad():
 
             if use_textVE:
@@ -449,7 +476,7 @@ def train(config):
                 # st()
                 _z_init, cond_image = cond_image, _z_init
 
-            assert config.sample.scale >= 1
+            # assert config.sample.scale >= 1
             _cfg = config.sample.scale
 
             has_null_indicator = hasattr(config.nnet.model_args, "cfg_indicator") if not use_PixArt else False
@@ -457,7 +484,7 @@ def train(config):
 
             ode_solver = ODEEulerFlowMatchingSolver(nnet_ema, step_size_type="step_in_dsigma", guidance_scale=_cfg ) 
             # st() 
-            _z, _ = ode_solver.sample(x_T=_z_init, batch_size=_n_samples, sample_steps=_sample_steps, unconditional_guidance_scale=_cfg, has_null_indicator=has_null_indicator, cond_image=cond_image, cond_mask=token_mask, do_regular_cfg=do_regular_cfg, _null_context=_null_context, use_PixArt=use_PixArt )
+            _z, _ = ode_solver.sample(x_T=_z_init, batch_size=_n_samples, sample_steps=_sample_steps, unconditional_guidance_scale=_cfg, has_null_indicator=has_null_indicator, cond_image=cond_image, cond_mask=token_mask, do_regular_cfg=do_regular_cfg, _null_context=_null_context, use_PixArt=use_PixArt, do_class_cond=do_class_cond,)
 
             if use_PixArt:
                 image_unprocessed = pixart_decode(_z)
@@ -549,6 +576,8 @@ def train(config):
                     _batch_caption_[0].append(_b_c[0])
                     _batch_caption_[1].append(_b_c[1])
                 _batch_caption = _batch_caption_
+            elif isinstance(_batch_caption[0], torch.Tensor):
+                _batch_caption = torch.stack(_batch_caption)
             if edit_mode:
                 batch[2] = torch.stack(batch[2], dim=0)
                 _batch_img_src_ori = batch[2]
@@ -574,11 +603,15 @@ def train(config):
                         _z_hole[:, :, start_idx:end_idx, start_idx:end_idx] = -1 # not sure how to make full black hole on latent 
                         _z = _z_hole
 
-                if llm == 't5':
-                    llm_fn = encode_text_t5
-                elif llm == 'clip':
-                    llm_fn = encode_text_clip
-                _batch_con, _batch_mask, _batch_token, _null_context = encode_all_prompts(_batch_caption, llm_fn, do_regular_cfg)
+                if llm is None:
+                    _batch_con = _batch_caption
+                    _batch_mask, _batch_token, _null_context = None, None, None
+                else:
+                    if llm == 't5':
+                        llm_fn = encode_text_t5
+                    elif llm == 'clip':
+                        llm_fn = encode_text_clip
+                    _batch_con, _batch_mask, _batch_token, _null_context = encode_all_prompts(_batch_caption, llm_fn, do_regular_cfg)
 
             contexts = _batch_con
             token_mask = _batch_mask
@@ -592,7 +625,7 @@ def train(config):
             #     raise NotImplementedError
             use_textVE = not (edit_mode and nnet_ema.module.cond_mode == 'cross-attn' and nnet_ema.module.direct_map and nnet_ema.module.use_cross_attn) if config.get('base_net', None) is None else False
             # st()
-            samples = ode_fm_solver_sample(nnet_ema, _n_samples=config.train.n_samples_eval, _sample_steps=50, context=contexts, token_mask=token_mask, cond_image=_z_cond if edit_mode else None, use_textVE=use_textVE, _null_context=_null_context, use_PixArt=config.get('base_net', None) == 'pixart')
+            samples = ode_fm_solver_sample(nnet_ema, _n_samples=config.train.n_samples_eval, _sample_steps=50, context=contexts, token_mask=token_mask, cond_image=_z_cond if edit_mode else None, use_textVE=use_textVE, _null_context=_null_context, use_PixArt=config.get('base_net', None) == 'pixart', do_class_cond=config.nnet.model_args.do_class_cond, )
             # st()
             samples = dataset.unpreprocess(samples)
             gt_samples = dataset.unpreprocess(_batch_img_ori)

@@ -80,6 +80,36 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
+class LabelEmbedder2(nn.Module):
+    """
+    Embeds class labels into vector representations. Also handles label dropout for classifier-free guidance.
+    """
+    def __init__(self, num_classes, hidden_size, dropout_prob):
+        super().__init__()
+        use_cfg_embedding = dropout_prob > 0
+        self.embedding_table = nn.Embedding(num_classes + use_cfg_embedding, hidden_size)
+        self.num_classes = num_classes
+        self.dropout_prob = dropout_prob
+
+    def token_drop(self, labels, force_drop_ids=None):
+        """
+        Drops labels to enable classifier-free guidance.
+        """
+        if force_drop_ids is None:
+            drop_ids = torch.rand(labels.shape[0], device=labels.device) < self.dropout_prob
+        else:
+            drop_ids = force_drop_ids == 1
+        labels = torch.where(drop_ids, self.num_classes, labels)
+        return labels
+
+    def forward(self, labels, train, force_drop_ids=None):
+        use_dropout = self.dropout_prob > 0
+        if (train and use_dropout) or (force_drop_ids is not None):
+            labels = self.token_drop(labels, force_drop_ids)
+        embeddings = self.embedding_table(labels)
+        return embeddings
+
+
 #################################################################################
 #                                 Core DiT Model                                #
 #################################################################################
@@ -113,7 +143,7 @@ class DiTBlock(nn.Module):
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
             # nn.Linear(hidden_size, hidden_size * 6, bias=True),
-            nn.Linear(hidden_size, hidden_size * (9 if self.use_cross_attn else 6), bias=True),
+            nn.Linear(hidden_size, hidden_size * (9 if self.use_cross_attn and not self.disable_cross_attn else 6), bias=True),
         )
 
     def forward(self, x, c, cond_x=None, cond_mask=None):
@@ -122,19 +152,19 @@ class DiTBlock(nn.Module):
 
     def _forward(self, x, c, cond_x=None, cond_mask=None):
         # st() 
-        if self.use_cross_attn:
+        if self.use_cross_attn and not self.disable_cross_attn:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp, shift_ca, scale_ca, gate_ca = self.adaLN_modulation(c).chunk(9, dim=-1)
         else:
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=-1) # Note -1 
         if gate_msa.ndim < 3:
             gate_msa = gate_msa.unsqueeze(1)
             gate_mlp = gate_mlp.unsqueeze(1)
-            if self.use_cross_attn:
+            if self.use_cross_attn and not self.disable_cross_attn:
                 gate_ca = gate_ca.unsqueeze(1)
 
         x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        if self.use_cross_attn and not self.disable_cross_attn :
-            x = x + gate_ca * self.cross_attn(modulate(self.norm_ca(x), shift_ca, scale_ca), cond_x, cond_x)[0] 
+        if self.use_cross_attn and not self.disable_cross_attn:
+            x = x + gate_ca * self.cross_attn(modulate(self.norm_ca(x), shift_ca, scale_ca), cond_x, cond_x, key_padding_mask=cond_mask)[0] 
             # x = x + self.cross_attn(self.norm_ca(x), cond_x, cond_x, key_padding_mask=cond_mask)[0] 
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
@@ -201,6 +231,11 @@ class DiT(nn.Module):
         # Will use fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
+        self.do_class_cond = hasattr(config, "do_class_cond") and config.do_class_cond
+        if self.do_class_cond:
+            assert self.disable_cross_attn
+            self.c_embedder = LabelEmbedder(num_classes, hidden_size)
+
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio, use_cross_attn=self.use_cross_attn, disable_cross_attn=self.disable_cross_attn) for _ in range(depth)
         ])
@@ -227,13 +262,13 @@ class DiT(nn.Module):
                                         )
             del self.open_clip.text
             del self.open_clip.logit_bias
-        
+
         else:
-            self.cond_embedder = nn.Sequential(
-                nn.Linear(config.clip_dim, hidden_size, bias=True),
-                # nn.LayerNorm(hidden_size),
-                # Act? glue or tanh etc
-            )
+            if not self.disable_cross_attn : 
+                self.cond_embedder = nn.Sequential(
+                    # nn.LayerNorm(config.clip_dim),
+                    nn.Linear(config.clip_dim, hidden_size, bias=True),
+                )
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -256,6 +291,9 @@ class DiT(nn.Module):
         # Initialize label embedding table:
         if not self.do_regular_cfg:
             nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
+        
+        if self.do_class_cond:
+            nn.init.normal_(self.c_embedder.embedding_table.weight, std=0.02)
 
         # Initialize timestep embedding MLP:
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
@@ -310,6 +348,9 @@ class DiT(nn.Module):
             y = self.y_embedder(null_indicator)    # (N, D)
         # Note that this is only an indicator for cfg, not the real cond, as the real con is x already in CF\ 
 
+        if self.do_class_cond:
+            y = self.c_embedder(cond_image)      # cond_image should be text prompt and then should be class labels 
+
         if self.edit_mode and self.cond_mode == 'self-attn':
             # st()
             cond_x = self.x_embedder(cond_image) + self.pos_embed # 
@@ -327,21 +368,21 @@ class DiT(nn.Module):
                 # (This might also be one of advantages of CF, that no sequential concat Cross Attn is needed! (not bcuz of compact save by dit, but bcuz of no cond any more by direct mapping!) -- (and btw not highlighted, so my temp attn etc. also)
                 t = t.unsqueeze(1)  # (N, 1, D)
 
-        if not self.do_regular_cfg:
+        if (not self.do_regular_cfg) or self.do_class_cond : 
             c = t + y                                # (N, D)
         else:
             c = t
 
-        if not self.use_textVE:
+        if not self.use_textVE and not self.disable_cross_attn : 
             # st()
             cond_x = self.cond_embedder(cond_image)  # (N, L, D)
             assert cond_mask is not None 
             cond_mask = cond_mask.bool()
         else:
-            cond_mask = None  
+            cond_x = cond_mask = None  
 
         for block in self.blocks:
-            if self.edit_mode and self.cond_mode == 'cross-attn' and self.use_cross_attn:
+            if self.edit_mode and self.cond_mode == 'cross-attn' and self.use_cross_attn : 
                 x = block(x, c, cond_x=cond_x, cond_mask=cond_mask )                      # (N, T, D)
             else:
                 x = block(x, c)                      # (N, T, D)

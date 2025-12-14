@@ -72,7 +72,7 @@ def load_checkpoint(checkpoint,
     logger = get_root_logger()
 
     # st()
-    if state_dict["final_layer.linear.weight"].shape != model.final_layer.linear.weight.shape[0]:
+    if state_dict["final_layer.linear.weight"].shape != model.final_layer.linear.weight.shape[0]: # WHY was this? forgot 
         assert model.final_layer.linear.weight.shape[0] * 2 == state_dict["final_layer.linear.weight"].shape[0]
         assert model.final_layer.scale_shift_table.shape == state_dict["final_layer.scale_shift_table"].shape
         state_dict["final_layer.linear.weight"] = state_dict["final_layer.linear.weight"][:model.final_layer.linear.weight.shape[0]]
@@ -80,13 +80,27 @@ def load_checkpoint(checkpoint,
 
     if model.edit_mode:
         # st()
-        if state_dict["x_embedder.proj.weight"].shape != model.x_embedder.proj.weight.shape:
-            assert state_dict["x_embedder.proj.weight"].shape[1] * 2 == model.x_embedder.proj.weight.shape[1], f"Shape mismatch: state_dict has {state_dict['x_embedder.proj.weight'].shape} vs model has {model.x_embedder.proj.weight.shape}"
-            logger.info("Expand the x_embedder.proj.weight for edit mode.")
-            old_weight = state_dict["x_embedder.proj.weight"]
-            new_weight = torch.zeros_like(model.x_embedder.proj.weight, device=old_weight.device, dtype=old_weight.dtype)
-            new_weight[:, :old_weight.shape[1] ] = old_weight
-            state_dict["x_embedder.proj.weight"] = new_weight 
+        # if state_dict["x_embedder.proj.weight"].shape != model.x_embedder.proj.weight.shape:
+        #     assert state_dict["x_embedder.proj.weight"].shape[1] * 2 == model.x_embedder.proj.weight.shape[1], f"Shape mismatch: state_dict has {state_dict['x_embedder.proj.weight'].shape} vs model has {model.x_embedder.proj.weight.shape}"
+        #     logger.info("Expand the x_embedder.proj.weight for edit mode.")
+        #     old_weight = state_dict["x_embedder.proj.weight"]
+        #     new_weight = torch.zeros_like(model.x_embedder.proj.weight, device=old_weight.device, dtype=old_weight.dtype)
+        #     new_weight[:, :old_weight.shape[1] ] = old_weight
+        #     state_dict["x_embedder.proj.weight"] = new_weight 
+
+        # st()
+        if model.gated_cross_attn:
+            # Expand scale_shift_table token numbers
+            for key in state_dict.keys():
+                if ("blocks" in key and "scale_shift_table" in key) or ('t_block' in key) :
+                    old_weight = state_dict[key]
+                    new_weight = model.state_dict()[key]
+                    if old_weight.shape[0] != new_weight.shape[0]:
+                        assert old_weight.shape[0] // 6 == new_weight.shape[0] // 9, f"Shape mismatch for {key}: state_dict has {old_weight.shape} vs model has {new_weight.shape}"
+                        full_weight = torch.zeros_like(new_weight, device=old_weight.device, dtype=old_weight.dtype)
+                        full_weight[:old_weight.shape[0]] = old_weight
+                        full_weight[old_weight.shape[0]:] = new_weight[old_weight.shape[0]:]
+                        state_dict[key] = full_weight
 
     missing, unexpect = model.load_state_dict(state_dict, strict=False)
     if model_ema is not None:

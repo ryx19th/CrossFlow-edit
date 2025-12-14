@@ -14,7 +14,8 @@ cond_mode = 'channel' # 'self-attn' # 'cross-attn' # ['channel', 'cross-attn', '
 
 # model setting
 model = dict(
-    type='PixArt_XL_2', edit_mode=edit_mode, cond_mode=cond_mode
+    type='PixArt_XL_2', edit_mode=edit_mode, cond_mode=cond_mode,
+    gated_cross_attn=False, # True, # 
 )
 mixed_precision = 'fp16'  # ['fp16', 'fp32', 'bf16']
 fp32_attention = True

@@ -220,12 +220,11 @@ def get_feature_dir_info(root):
 
 
 class ImageDataset(Dataset):
-    def __init__(self, root, resolution, llm, edit_mode=False, prompt_mode='output', naive_mode=None):
+    def __init__(self, root, resolution, edit_mode=False, prompt_mode='output', naive_mode=None, do_class_cond=False):
         super().__init__()
         json_path = os.path.join(root,'img_text_pair.jsonl')
         self.img_root = os.path.join(root,'imgs')
         self.resolution = resolution
-        self.llm = llm
         self.file_list = []
         with open(json_path, 'r', encoding='utf-8') as file:
             for line in tqdm(file):
@@ -235,6 +234,7 @@ class ImageDataset(Dataset):
         assert self.prompt_mode in ['output', 'dual', 'instruction']
         self.naive_mode = naive_mode
         assert self.naive_mode in [None, 'zoom_in', 'zoom_in_out', 'rotate', 'hole', 'hole_latent', 'margin', 'hole_margin', ]
+        self.do_class_cond = do_class_cond
 
     def __len__(self):
         return len(self.file_list)
@@ -269,36 +269,33 @@ class ImageDataset(Dataset):
         if self.naive_mode == 'zoom_in':
             img_zoom = self.zoom_in_img(pil_img)
             img, img_src = img_zoom, img
-            prompt = 'zoom in'
+            prompt = torch.tensor(0, dtype=torch.int) if self.do_class_cond else 'zoom in'
 
         elif self.naive_mode == 'zoom_in_out':
             img_zoom = self.zoom_in_img(pil_img)
             p = random.random()
             if p < 0.5:
                 img, img_src = img_zoom, img
-                prompt = 'zoom in'
+                prompt = torch.tensor(0, dtype=torch.int) if self.do_class_cond else 'zoom in'
             else:
                 img_src = img_zoom
-                prompt = 'zoom out'
-            # diff = np.abs(img - img_src).max()
-            # if diff < 1e-2:
-            #     print(f"[DEBUG] idx={idx}, path={img_path}, prompt={prompt}, max_diff={diff}")
+                prompt = torch.tensor(1, dtype=torch.int) if self.do_class_cond else 'zoom out'
 
         elif self.naive_mode == 'rotate':
             p = random.random()
             if p < 0.5:
                 img_rot = self.rotate_img(pil_img, 'left')
                 img, img_src = img_rot, img
-                prompt = 'rotate left'
+                prompt = torch.tensor(0, dtype=torch.int) if self.do_class_cond else 'rotate left'
             else:
                 img_rot = self.rotate_img(pil_img, 'right')
                 img, img_src = img_rot, img
-                prompt = 'rotate right'
+                prompt = torch.tensor(1, dtype=torch.int) if self.do_class_cond else 'rotate right'
 
         elif self.naive_mode == 'hole':
             img_hole = self.hole_margin_img(img, mode='hole')
             img, img_src = img_hole, img
-            prompt = 'an image with a hole in the center'
+            prompt = torch.tensor(0, dtype=torch.int) if self.do_class_cond else 'an image with a hole in the center'
 
         elif self.naive_mode == 'hole_latent':
             # st()
@@ -307,18 +304,18 @@ class ImageDataset(Dataset):
         elif self.naive_mode == 'margin':
             img_mar = self.hole_margin_img(img, mode='margin')
             img, img_src = img_mar, img
-            prompt = 'an image with margins missing'
+            prompt = torch.tensor(0, dtype=torch.int) if self.do_class_cond else 'an image with margins missing'
 
         elif self.naive_mode == 'hole_margin':
             p = random.random()
             if p < 0.5:
                 img_hole = self.hole_margin_img(img, mode='hole')
                 img, img_src = img_hole, img
-                prompt = 'an image with a hole in the center'
+                prompt = torch.tensor(0, dtype=torch.int) if self.do_class_cond else 'an image with a hole in the center'
             else:
                 img_mar = self.hole_margin_img(img, mode='margin')
                 img, img_src = img_mar, img
-                prompt = 'an image with margins missing'
+                prompt = torch.tensor(1, dtype=torch.int) if self.do_class_cond else 'an image with margins missing'
 
         if self.edit_mode:
             return img, prompt, img_src
@@ -381,13 +378,13 @@ class ImageDataset(Dataset):
 
 
 class ImageFullDataset(DatasetFactory):  # the moments calculated by Stable Diffusion image encoder & the contexts calculated by clip
-    def __init__(self, train_path, val_path, resolution, llm, cfg=False, p_uncond=None, fix_test_order=False, edit_mode=False, prompt_mode='output', naive_mode=None):
+    def __init__(self, train_path, val_path, resolution, cfg=False, p_uncond=None, fix_test_order=False, edit_mode=False, prompt_mode='output', naive_mode=None, do_class_cond=False):
         super().__init__()
         print('Prepare dataset...')
         self.resolution = resolution
 
-        self.train = ImageDataset(train_path, resolution=resolution, llm=llm, edit_mode=edit_mode, prompt_mode=prompt_mode, naive_mode=naive_mode)
-        self.test = ImageDataset(val_path, resolution=resolution, llm=llm, edit_mode=edit_mode, prompt_mode=prompt_mode, naive_mode=naive_mode)
+        self.train = ImageDataset(train_path, resolution=resolution, edit_mode=edit_mode, prompt_mode=prompt_mode, naive_mode=naive_mode, do_class_cond=do_class_cond)
+        self.test = ImageDataset(val_path, resolution=resolution, edit_mode=edit_mode, prompt_mode=prompt_mode, naive_mode=naive_mode, do_class_cond=do_class_cond)
         
         print('Prepare dataset ok')
 

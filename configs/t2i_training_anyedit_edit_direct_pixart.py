@@ -15,22 +15,25 @@ model = Args(
     norm_type = "TDRMSN",
     use_t2i = True,
     clip_dim=4096,
-    num_clip_token=77,
+    # num_clip_token=77,
     gradient_checking=True, # for larger model
     # cfg_indicator=0.10,
-    textVAE = Args(
-        num_blocks = 11,
-        hidden_dim = 1024,
-        hidden_token_length = 256,
-        num_attention_heads = 8,
-        dropout_prob = 0.1,
-    ),
+    # textVAE = Args(
+    #     num_blocks = 11,
+    #     hidden_dim = 1024,
+    #     hidden_token_length = 256,
+    #     num_attention_heads = 8,
+    #     dropout_prob = 0.1,
+    # ),
     edit_mode=True,
     cond_mode='cross-attn', # 'channel', # 'self-attn', #              # ['channel', 'cross-attn', 'self-attn'] 
     direct_map=True,
-    use_cross_attn=True, # False, # 
-    do_regular_cfg=True, # False, # 
+    use_cross_attn=True,
+    do_regular_cfg=True,
     prompt_dropout_prob=0.0, # 0.1, # 
+    disable_cross_attn=False,
+    do_class_cond=False,
+    num_classes=2,
 )
 
 def d(**kwargs):
@@ -55,7 +58,7 @@ def get_config():
         mode='cond',
         log_interval=1, # 10, # 
         eval_interval=10, # 100, #                                      # iteration interval for visual testing on the specified prompt
-        save_interval=100, # 5000, #                                     # iteration interval for saving checkpoints and testing FID
+        save_interval=1000, # 100, # 5000, #                                     # iteration interval for saving checkpoints and testing FID
         n_samples_eval=8,                                       # number of samples duing visual testing. This depends on your GPU memory and can be any integer between 1 and 15 (as we provide only 15 prompts).
     )
 
@@ -69,7 +72,7 @@ def get_config():
 
     config.lr_scheduler = d(
         name='customized',
-        warmup_steps=100, # 1000, # 5000, #                                      # warmup steps
+        warmup_steps=5000, # 100, # 1000, #                                      # warmup steps
     )
 
     global model
@@ -82,12 +85,14 @@ def get_config():
     config.dataset = d(
         name='ImageDataset',                               # dataset name
         resolution=256, # 512, #                                          # dataset resolution
-        llm='t5', # 'clip', #                                            # language model to generate language embedding
-        train_path='anyedit', # 'anyedit_1k', # 'anyedit_all', #     # training set path
-        val_path='anyedit', # 'anyedit_1k', # 'anyedit_val', #                     # val set path
+        # llm='t5', # 'clip', #                                            # language model to generate language embedding
+        train_path='anyedit_all', # 'anyedit', # 'anyedit_1k', #     # training set path
+        val_path='anyedit_all', # 'anyedit', # 'anyedit_1k', # 'anyedit_val', #                     # val set path
         cfg=False,
         edit_mode=True,
         prompt_mode='dual', # 'output', # 'instruction', #               # ['output', 'dual', 'instruction']
+        naive_mode='zoom_in_out', # 'hole_margin', # 'margin', # 'zoom_in', # 'hole_latent', # 'hole', # 'rotate', # None, # 
+        do_class_cond=False,
     )
 
     config.sample = d(
@@ -95,7 +100,7 @@ def get_config():
         n_samples=30000,                                        # number of samples for testing (during training, we sample 10K images, which is hardcoded in the training script)
         mini_batch_size=10,                                     # batch size for testing (i.e., the number of images generated per GPU)
         cfg=False,
-        scale=1.0, # 4.5, #                                               # cfg scale
+        scale=0.0, # 1.0, # 4.5, #                                               # cfg scale
         path=''
     )
 
@@ -103,7 +108,9 @@ def get_config():
 
     config.edit_mode = True
 
-    config.workdir = 't2i_training_anyedit_edit_direct_pixart_dualp' # 't2i_training_anyedit_edit_direct_pixart' # 't2i_training_anyedit_edit_direct_pixart_overfit_dualp' # 't2i_training_anyedit_edit_direct_pixart_overfit' # 't2i_training_anyedit_edit_direct_pixart_overfit_instp' # 't2i_training_anyedit_edit_direct_pixart_instp' # 
+    config.clip_grad_norm = 1.0 # 0.0 # 
+
+    config.workdir = 't2i_training_anyedit_edit_direct_pixart_full_zoominout_BSLR_clipnorm' # 't2i_training_anyedit_edit_direct_pixart_full_zoominout_BSLR_gatedx_clipnorm' # 't2i_training_anyedit_edit_direct_pixart_dualp' # 't2i_training_anyedit_edit_direct_pixart' # 't2i_training_anyedit_edit_direct_pixart_overfit_dualp' # 't2i_training_anyedit_edit_direct_pixart_overfit' # 't2i_training_anyedit_edit_direct_pixart_overfit_instp' # 't2i_training_anyedit_edit_direct_pixart_instp' # 
 
     config.base_net = 'pixart'
 
